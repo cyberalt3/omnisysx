@@ -1,6 +1,6 @@
 <div align="center">
 
-# omnisysX
+# OmnisysX
 
 ### Multi-Agent DeFi Pipeline · Built on Zerion CLI
 
