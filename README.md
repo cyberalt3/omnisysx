@@ -107,7 +107,7 @@ The `agent/` is the source of truth for the pipeline logic. The `bot/` and `web/
 ### 1. Clone and install
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/omnisysx
+git clone https://github.com/cyberalt3/omnisysx
 cd omnisysx
 npm install
 ```
