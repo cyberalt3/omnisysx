@@ -1,0 +1,36 @@
+{
+  "name": "omnisysx",
+  "version": "0.1.0",
+  "description": "Multi-Agent DeFi Pipeline — autonomous wallet monitoring and onchain execution via Zerion CLI",
+  "type": "module",
+  "private": true,
+  "workspaces": [
+    "agent",
+    "bot"
+  ],
+  "scripts": {
+    "agent":    "node agent/agent.mjs",
+    "bot":      "node bot/bot.mjs",
+    "agent:dry": "EXECUTOR_DRY_RUN=true node agent/agent.mjs",
+    "test:obs": "node scripts/test-observer.mjs"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/YOUR_USERNAME/omnisysx"
+  },
+  "license": "MIT",
+  "keywords": [
+    "defi",
+    "zerion",
+    "ai-agent",
+    "claude",
+    "anthropic",
+    "multi-agent",
+    "discord-bot",
+    "onchain",
+    "base"
+  ]
+}
