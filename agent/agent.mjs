@@ -3,7 +3,7 @@
  * ----------------------------------------------------------
  * A production-grade autonomous DeFi pipeline that observes
  * wallets, reasons about risk, and executes onchain swaps —
- * built on top of the Zerion CLI and Anthropic's Haiku model.
+ * built on top of the Zerion HTTP API and OpenRouter LLM gateway.
  *
  * Pipeline (the "V Pattern"):
  *
@@ -25,14 +25,16 @@ const exec = promisify(execFile)
 // CONFIG
 // ============================================================
 
-const ANTHROPIC_API_KEY  = process.env.ANTHROPIC_API_KEY
+const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY
+const ZERION_API_KEY     = process.env.ZERION_API_KEY
 const AGENT_WALLET_NAME  = process.env.AGENT_WALLET_NAME || 'omnisysx-bot'
 const TARGET_ADDRESS     = process.env.AGENT_WALLET_ADDRESS
 const MIN_ETH_GAS        = parseFloat(process.env.MIN_ETH_GAS_RESERVE || '0.002')
 const DRY_RUN            = process.env.EXECUTOR_DRY_RUN !== 'false'
-const MODEL              = process.env.AGENT_MODEL || 'claude-haiku-4-5-20251001'
+const MODEL              = process.env.LLM_MODEL || process.env.AGENT_MODEL || 'anthropic/claude-3.5-haiku'
 
-if (!ANTHROPIC_API_KEY) die('ANTHROPIC_API_KEY missing in .env')
+if (!OPENROUTER_API_KEY) die('OPENROUTER_API_KEY missing in .env')
+if (!ZERION_API_KEY)    die('ZERION_API_KEY missing in .env')
 if (!TARGET_ADDRESS)    die('AGENT_WALLET_ADDRESS missing in .env')
 
 // ============================================================
@@ -57,25 +59,35 @@ function die(msg) {
 
 // ============================================================
 // STAGE 1 — OBSERVER
-// Reads onchain wallet state via the Zerion CLI.
+// Reads onchain wallet state via the Zerion HTTP API.
 // ============================================================
 
 async function runObserver(address) {
   log.stage('OBSERVE', `analyzing ${shortAddr(address)}`)
 
-  const args = ['analyze', address, '--json']
-  if (process.env.ZERION_X402 === 'true') args.push('--x402')
+  const [posData, portData] = await Promise.all([
+    zerionGet(`/wallets/${address}/positions/?filter[positions]=only_simple&currency=usd&sort=value&filter[trash]=only_non_trash`),
+    zerionGet(`/wallets/${address}/portfolio?currency=usd`),
+  ])
 
-  const data = await zerionCli(args)
-  const positions = data.positions || []
-  const totalUsd  = data.portfolio?.totals?.positions ?? 0
-  const change24h = data.portfolio?.changes?.percent_1d ?? 0
+  const positions = (posData.data || []).map(p => {
+    const attr = p.attributes || {}
+    const info = attr.fungible_info || {}
+    return {
+      symbol: info.symbol || '???',
+      chain: attr.chain_id || 'unknown',
+      quantity: attr.quantity?.float || 0,
+      value: attr.value || 0,
+    }
+  }).filter(p => p.value > 0.01)
+
+  const totalUsd  = portData.data?.attributes?.total?.positions || positions.reduce((s, p) => s + p.value, 0)
+  const change24h = portData.data?.attributes?.changes?.percent_1d || 0
   const ethPos    = findEth(positions)
   const ethBal    = ethPos?.quantity ?? 0
   const gasStatus = computeGasStatus(ethBal)
 
   const topPositions = positions
-    .filter(p => p.value)
     .sort((a, b) => b.value - a.value)
     .slice(0, 5)
     .map(p => ({ symbol: p.symbol, chain: p.chain, qty: p.quantity, usd: p.value }))
@@ -267,35 +279,39 @@ async function runVerify(execResult, beforeReport) {
 // HELPERS
 // ============================================================
 
-async function zerionCli(args) {
-  try {
-    const { stdout } = await exec('zerion', args, {
-      env: process.env, maxBuffer: 10 * 1024 * 1024,
-    })
-    return JSON.parse(stdout)
-  } catch (e) {
-    throw new Error(`zerion ${args[0]} failed: ${e.stderr || e.message}`)
-  }
+async function zerionGet(path) {
+  const res = await fetch(`https://api.zerion.io/v1${path}`, {
+    headers: {
+      'Authorization': 'Basic ' + Buffer.from(ZERION_API_KEY + ':').toString('base64'),
+      'Content-Type': 'application/json',
+    },
+  })
+  if (!res.ok) throw new Error(`Zerion API ${res.status}: ${await res.text()}`)
+  return res.json()
 }
 
 async function askClaude(systemPrompt, userPrompt, opts = {}) {
-  const res = await fetch('https://api.anthropic.com/v1/messages', {
+  const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
     method: 'POST',
     headers: {
-      'Content-Type':      'application/json',
-      'x-api-key':         ANTHROPIC_API_KEY,
-      'anthropic-version': '2023-06-01',
+      'Content-Type':  'application/json',
+      'Authorization': `Bearer ${OPENROUTER_API_KEY}`,
+      'HTTP-Referer':  'https://omnisysx.io',
+      'X-Title':       'OmnisysX Agent',
     },
     body: JSON.stringify({
       model:      MODEL,
       max_tokens: opts.maxTokens || 800,
-      system:     systemPrompt,
-      messages:   [{ role: 'user', content: userPrompt }],
+      messages:   [
+        { role: 'system', content: systemPrompt },
+        { role: 'user',   content: userPrompt },
+      ],
+      temperature: 0.3,
     }),
   })
-  if (!res.ok) throw new Error(`Anthropic API ${res.status}: ${await res.text()}`)
+  if (!res.ok) throw new Error(`OpenRouter API ${res.status}: ${await res.text()}`)
   const data = await res.json()
-  return data.content[0].text
+  return data.choices?.[0]?.message?.content || ''
 }
 
 function extractJson(text) {
