@@ -56,11 +56,13 @@ This is the same pattern professional trading desks use: research, strategy, and
 ## Features
 
 - 🤖 **Multi-agent pipeline** with explicit security checkpoints
-- 🪙 **Native Zerion CLI integration** — reads wallet state, executes swaps, all through one tool
+- 🌐 **Zerion HTTP REST API** — production-grade wallet data, no CLI binary dependency
 - 🛡️ **Policy-bounded execution** — agent token + Zerion policy guarantee the agent can only do what you allow
-- 💸 **Cost-optimized** — Claude Haiku 4.5 keeps each pipeline run under $0.05
+- 🧠 **Orchestrator AI** — Web3 expert assistant via `/ask` or `@mention`, powered by OpenRouter
+- 🔒 **Security guardrails** — AI scope-locked to Web3 topics, never reveals keys or internal config
+- 💸 **Cost-optimized** — Claude 3.5 Haiku keeps each pipeline run under $0.05
 - 🌐 **Web dashboard** — single-file React app, no build step, deploy anywhere
-- 🤖 **Discord bot** — public, slash commands + auto alerts, sharable across communities
+- 🤖 **Discord bot** — slash commands, @mention chat, auto alerts, Trinity Verification Report
 - 🔌 **x402 ready** — pay-per-call mode for autonomous wallets that pay for their own data
 - 🍴 **Forkable** — MIT license, modular code, swap any component
 
@@ -70,12 +72,13 @@ This is the same pattern professional trading desks use: research, strategy, and
 
 ```
 omnisysx/
-├── agent/              # Multi-agent pipeline (~290 LOC, single file)
+├── agent/              # Multi-agent pipeline (~370 LOC, single file)
 │   ├── agent.mjs       #   Observer → TaskManager → Auditor → Executor → Verify
 │   └── package.json
 │
-├── bot/                # Discord bot (~530 LOC, single file)
-│   ├── bot.mjs         #   Slash commands + auto alerts
+├── bot/                # Discord bot (~795 LOC, single file)
+│   ├── bot.mjs         #   Slash commands + Orchestrator AI + @mention chat
+│   ├── README.md       #   Bot-specific setup and usage
 │   └── package.json
 │
 ├── web/                # Static web dashboard (no build step)
@@ -98,10 +101,9 @@ The `agent/` is the source of truth for the pipeline logic. The `bot/` and `web/
 
 ### Prerequisites
 
-- **Node.js 20+**
-- **Zerion CLI** — install with `npm install -g zerion-cli`
-- An **Anthropic API key** ([console.anthropic.com](https://console.anthropic.com))
-- A **Zerion API key** ([dashboard.zerion.io](https://dashboard.zerion.io)) — free tier works
+- **Node.js 22+**
+- **Zerion API Key** — [developers.zerion.io](https://developers.zerion.io) (free tier works)
+- An **OpenRouter API key** ([openrouter.ai](https://openrouter.ai)) — for LLM inference
 - A **dedicated agent wallet** (do NOT use your main wallet) funded with a small amount of ETH on Base
 
 ### 1. Clone and install
@@ -148,8 +150,9 @@ cp .env.example .env
 
 Open `.env` and fill in:
 
-- `ANTHROPIC_API_KEY` — your Anthropic key
+- `OPENROUTER_API_KEY` — your OpenRouter key
 - `ZERION_API_KEY` — your Zerion key
+- `LLM_MODEL` — model to use (default: `anthropic/claude-3.5-haiku`)
 - `AGENT_WALLET_ADDRESS` — the public address of the wallet you just created
 - `EXECUTOR_DRY_RUN=true` — keep it on `true` until you're ready to execute real swaps
 
@@ -191,14 +194,14 @@ When you're ready, set `EXECUTOR_DRY_RUN=false` in `.env` and run again. The Exe
 
 ## 🤖 The Discord bot
 
-Public bot anyone can add to their server. It exposes the same pipeline through slash commands, plus automatic gas-reserve alerts.
+Public bot anyone can add to their server. It exposes the pipeline through slash commands, an AI-powered Web3 assistant (Orchestrator), and automatic gas-reserve alerts.
 
 ### Setup
 
 ```bash
 cd bot
 npm install
-cp ../.env.example .env  # fill in DISCORD_BOT_TOKEN and DISCORD_CLIENT_ID
+cp ../.env.example .env  # fill in all required keys
 npm start
 ```
 
@@ -206,15 +209,17 @@ Get your Discord credentials at [discord.com/developers/applications](https://di
 
 1. Create a new Application
 2. Go to **Bot** tab → **Reset Token** → copy
-3. Go to **OAuth2** → **General** → copy the **Application ID**
-4. Generate an invite URL via **OAuth2** → **URL Generator** with scopes `bot` + `applications.commands` and permissions `Send Messages`, `Embed Links`, `Use Slash Commands`
+3. Go to **Bot** tab → Enable **Message Content Intent** (required for @mentions)
+4. Go to **OAuth2** → **General** → copy the **Application ID**
+5. Generate an invite URL via **OAuth2** → **URL Generator** with scopes `bot` + `applications.commands` and permissions `Send Messages`, `Embed Links`, `Read Message History`, `Use Slash Commands`
 
 ### Commands
 
 | Command | What it does |
 |---------|--------------|
 | `/portfolio [address]` | Wallet snapshot embed |
-| `/run [address]` | Trigger the full pipeline |
+| `/run [address]` | Full pipeline → Trinity Verification Report |
+| `/ask <question> [wallet]` | Ask the Orchestrator about Web3/DeFi |
 | `/policy` | Show the active agent token policy |
 | `/watch <address> <name>` | Add a wallet to the watchlist |
 | `/unwatch <name>` | Remove from watchlist |
@@ -222,9 +227,22 @@ Get your Discord credentials at [discord.com/developers/applications](https://di
 | `/status` | Show last pipeline execution |
 | `/help` | Show all commands |
 
+### @Mention chat
+
+Mention the bot to chat with the Orchestrator AI:
+
+```
+@OmnisysX what is Aave?
+@OmnisysX analyze 0x75029d830749554d2dccc5e00dda7eb7c294c423
+```
+
+The Orchestrator is scope-locked to Web3 topics and automatically injects wallet portfolio data when an address is detected. It will never reveal API keys or internal configuration.
+
 ### Auto alerts
 
 Set `ALERT_CHANNEL_ID` in `.env` to a Discord channel ID and the bot will post critical alerts there (currently: gas reserve breach, with 1-hour cooldown).
+
+See [bot/README.md](bot/README.md) for detailed setup and hosting instructions.
 
 ---
 
@@ -311,9 +329,12 @@ The pipeline contract (`runPipeline()` returning a `{ report, tis, pdr, execResu
 ## Roadmap
 
 - [x] Three-agent pipeline (Observer / Task Manager / Auditor)
-- [x] Zerion CLI integration with agent token + policy
+- [x] Zerion HTTP REST API integration (replaced CLI dependency)
 - [x] Web dashboard with documentation
 - [x] Discord bot with slash commands + auto alerts
+- [x] Orchestrator AI — `/ask` + `@mention` chat with security guardrails
+- [x] Trinity Verification Report for `/run` output
+- [x] Railway deployment with Docker (Node 22)
 - [ ] Telegram bot (community contribution welcome)
 - [ ] Multi-chain orchestration (currently single-chain per run)
 - [ ] Backtesting harness — replay past wallet states
@@ -332,7 +353,8 @@ For a fork-friendly project, the architecture is intentionally minimal: every co
 ## Acknowledgements
 
 - **[Zerion](https://zerion.io)** — for the CLI, the API, and the agent token primitives
-- **[Anthropic](https://anthropic.com)** — for Claude (Haiku 4.5 powers the agents)
+- **[Anthropic](https://anthropic.com)** — for Claude (3.5 Haiku powers the agents via OpenRouter)
+- **[OpenRouter](https://openrouter.ai)** — for LLM gateway and model routing
 - **[Coinbase](https://www.coinbase.com/developer-platform)** — for the x402 protocol on Base
 
 

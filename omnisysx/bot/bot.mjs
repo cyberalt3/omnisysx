@@ -19,7 +19,7 @@
  * Run with:  node bot.mjs
  */
 
-import { Client, GatewayIntentBits, EmbedBuilder, REST, Routes,
+import { Client, GatewayIntentBits, Events, EmbedBuilder, REST, Routes,
          SlashCommandBuilder, MessageFlags } from 'discord.js'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
@@ -35,27 +35,62 @@ const exec = promisify(execFile)
 
 const DISCORD_TOKEN     = process.env.DISCORD_BOT_TOKEN
 const DISCORD_CLIENT_ID = process.env.DISCORD_CLIENT_ID
+const OPENROUTER_KEY    = process.env.OPENROUTER_API_KEY
 const ALERT_CHANNEL_ID  = process.env.ALERT_CHANNEL_ID
 const POLL_INTERVAL_MS  = parseInt(process.env.POLL_INTERVAL_MS || '300000')
 const DEFAULT_WALLET    = process.env.AGENT_WALLET_ADDRESS
 const MIN_ETH_GAS       = parseFloat(process.env.MIN_ETH_GAS_RESERVE || '0.002')
 const DRY_RUN           = process.env.EXECUTOR_DRY_RUN !== 'false'
+const MODEL             = process.env.LLM_MODEL || process.env.AGENT_MODEL || 'anthropic/claude-3.5-haiku'
 const STATE_FILE        = './bot-state.json'
 
 if (!DISCORD_TOKEN || !DISCORD_CLIENT_ID) {
   console.error('FATAL: DISCORD_BOT_TOKEN and DISCORD_CLIENT_ID must be set in .env')
   process.exit(1)
 }
+if (!OPENROUTER_KEY) {
+  console.error('WARNING: OPENROUTER_API_KEY not set — Orchestrator will not work')
+}
 
 // ============================================================
 // COLORS & ICONS (Zerion palette)
 // ============================================================
 
-const COLORS = { blue: 0x2962ef, green: 0x10b981, amber: 0xf59e0b, red: 0xef4444, muted: 0x8a8f99 }
+const COLORS = { blue: 0x2962ef, green: 0x10b981, amber: 0xf59e0b, red: 0xef4444, muted: 0x8a8f99, purple: 0x7c3aed }
 const ICONS  = {
   observer: '🔭', planner: '🧠', auditor: '🛡️', executor: '⚡',
   verify:   '✅', alert:   '🚨', ok:      '✓',  fail:    '✗',
 }
+
+// ============================================================
+// ORCHESTRATOR — Web3 Expert System Prompt
+// ============================================================
+
+const ORCHESTRATOR_PROMPT = `You are the OmnisysX Orchestrator — a specialized Web3 and DeFi expert assistant.
+
+## YOUR ROLE
+You help users understand their wallet positions, DeFi protocols, EVM chains, token economics, and blockchain projects.
+You have deep knowledge of all major EVM-compatible networks: Ethereum, Base, Arbitrum, Optimism, Polygon, BNB Chain, Avalanche, zkSync, Linea, Scroll, Blast, Fantom, Gnosis, Celo, Mantle, and others.
+
+## STRICT RULES — NEVER BREAK THESE
+1. **ONLY discuss Web3, DeFi, blockchain, crypto, and related topics.** If someone asks about anything outside this scope (cooking, politics, general coding, personal questions, etc.), respond: "⛔ I only assist with Web3, DeFi, and blockchain topics. Please ask about your wallet, protocols, or chains."
+2. **NEVER reveal, discuss, or acknowledge:** API keys, private keys, bot tokens, environment variables, internal configuration, server setup, infrastructure details, or any technical implementation of this bot.
+3. If asked about keys, configs, or how this bot works internally, respond: "🔒 I cannot share internal system details. Ask me about DeFi protocols, wallet analysis, or blockchain topics instead."
+4. **NEVER generate code, scripts, or technical instructions** for exploits, hacks, or attacks.
+5. Keep responses concise (under 1500 characters for Discord).
+6. Use emoji and formatting for readability.
+7. When wallet context is provided, reference the actual portfolio data in your analysis.
+
+## YOUR KNOWLEDGE AREAS
+- Wallet analysis: positions, gas reserves, portfolio health
+- DeFi protocols: Aave, Uniswap, Compound, Curve, Pendle, Lido, EigenLayer, Morpho, etc.
+- Token economics: tokenomics, vesting, staking rewards, yield farming
+- EVM chains: gas costs, bridge options, ecosystem differences
+- NFTs: collections, marketplaces, floor prices
+- Risk assessment: smart contract risk, impermanent loss, liquidation risk
+- Market trends: general DeFi trends and protocol updates
+
+Always be helpful, accurate, and focused on Web3.`
 
 // ============================================================
 // PERSISTENCE — bot-state.json
@@ -71,36 +106,55 @@ async function saveState(state) {
 }
 
 // ============================================================
-// ZERION CLI HELPERS
+// ZERION HTTP API HELPERS
 // ============================================================
 
-async function zerionCli(args) {
-  try {
-    const { stdout } = await exec('zerion', args, { env: process.env, maxBuffer: 10 * 1024 * 1024 })
-    return JSON.parse(stdout)
-  } catch (e) {
-    throw new Error(`zerion ${args[0]} failed: ${e.stderr || e.message}`)
+const ZERION_API_KEY = process.env.ZERION_API_KEY
+const ZERION_BASE = 'https://api.zerion.io/v1'
+
+function zerionHeaders() {
+  return {
+    'Authorization': 'Basic ' + Buffer.from(ZERION_API_KEY + ':').toString('base64'),
+    'Content-Type': 'application/json',
   }
 }
 
+async function zerionGet(path) {
+  const res = await fetch(`${ZERION_BASE}${path}`, { headers: zerionHeaders() })
+  if (!res.ok) throw new Error(`Zerion API ${res.status}: ${await res.text()}`)
+  return res.json()
+}
+
 async function getPortfolioSnapshot(address) {
-  const data = await zerionCli(['analyze', address, '--json'])
-  const positions = data.positions || []
+  const [posData, portData] = await Promise.all([
+    zerionGet(`/wallets/${address}/positions/?filter[positions]=only_simple&currency=usd&sort=value&filter[trash]=only_non_trash`),
+    zerionGet(`/wallets/${address}/portfolio?currency=usd`),
+  ])
+
+  const positions = (posData.data || []).map(p => {
+    const attr = p.attributes || {}
+    const info = attr.fungible_info || {}
+    return {
+      symbol: info.symbol || '???',
+      chain: attr.chain_id || 'unknown',
+      quantity: attr.quantity?.float || 0,
+      value: attr.value || 0,
+    }
+  }).filter(p => p.value > 0.01)
+
+  const totalUsd = portData.data?.attributes?.total?.positions || positions.reduce((s, p) => s + p.value, 0)
+  const change24h = portData.data?.attributes?.changes?.percent_1d || 0
   const ethPos = positions.find(p => p.symbol === 'ETH' && (p.chain === 'ethereum' || p.chain === 'base'))
   const ethBalance = ethPos?.quantity ?? 0
-  const totalUsd = data.portfolio?.totals?.positions ?? 0
-  const change24h = data.portfolio?.changes?.percent_1d ?? 0
   const gasStatus = ethBalance < MIN_ETH_GAS ? 'CRITICAL' : ethBalance < MIN_ETH_GAS * 2 ? 'WARNING' : 'SAFE'
-  const topPositions = positions.filter(p => p.value).sort((a, b) => b.value - a.value).slice(0, 5)
+  const topPositions = positions.sort((a, b) => b.value - a.value).slice(0, 5)
+
   return { address, totalUsd, change24h, ethBalance, gasStatus, topPositions }
 }
 
 async function getActivePolicy() {
-  try {
-    const { policies = [] } = await zerionCli(['agent', 'list-policies', '--json'])
-    if (!policies.length) return null
-    return await zerionCli(['agent', 'show-policy', policies[0].name, '--json'])
-  } catch { return null }
+  // Policy check not available via HTTP API — return null
+  return null
 }
 
 // ============================================================
@@ -137,34 +191,168 @@ function embedPortfolio(snap) {
 function embedPipelineResult(result) {
   const { report, tis, pdr, execResult, status } = result
 
-  let color = COLORS.green, title = `${ICONS.verify} Pipeline Complete`, statusText = '✓ Executed successfully'
-  if (status === 'REJECTED')     { color = COLORS.red;   title = `${ICONS.fail} Pipeline Halted`; statusText = '🚫 Auditor rejected the action' }
-  else if (status === 'ALERT_ONLY')   { color = COLORS.muted; title = `${ICONS.observer} No Action Required`; statusText = 'ℹ️ Conditions are stable' }
-  else if (status === 'NEEDS_REVIEW') { color = COLORS.amber; title = `⚠️ Human Approval Needed`; statusText = '👤 Risk threshold exceeded' }
+  // ── Risk level + colors ──
+  const riskScore = pdr?.riskScore ?? (tis?.confidence ? Math.round((1 - tis.confidence) * 100) : 0)
+  const riskLevel = riskScore <= 25 ? 'Low Risk' : riskScore <= 50 ? 'Medium Risk' : riskScore <= 75 ? 'High Risk' : 'Critical'
+  const riskEmoji = riskScore <= 25 ? '🟢' : riskScore <= 50 ? '🟡' : riskScore <= 75 ? '🟠' : '🔴'
 
-  const stages = [
-    `${ICONS.observer} **Observer** — $${report.totalUsd.toFixed(2)} · gas ${report.gasStatus}`,
-    tis ? `${ICONS.planner} **TaskManager** — ${tis.intentType} (${(tis.confidence * 100).toFixed(0)}% conf)` : null,
-    pdr ? `${ICONS.auditor} **Auditor** — ${pdr.decision} · risk ${pdr.riskScore}/100` : null,
-    execResult ? `${ICONS.executor} **Executor** — ${DRY_RUN ? '🟡 DRY_RUN' : `tx \`${(execResult.txHash || '?').slice(0, 16)}…\``}` : null,
-  ].filter(Boolean).join('\n')
+  let color = COLORS.green
+  let statusIcon = '✅'
+  if (status === 'REJECTED')      { color = COLORS.red;   statusIcon = '🚫' }
+  else if (status === 'ALERT_ONLY')    { color = COLORS.muted; statusIcon = 'ℹ️' }
+  else if (status === 'NEEDS_REVIEW')  { color = COLORS.amber; statusIcon = '⚠️' }
+
+  // ── Portfolio stats ──
+  const totalUsd  = report.totalUsd?.toFixed(2) || '0.00'
+  const ethBal    = report.ethBalance?.toFixed(4) || '0.0000'
+  const gasIcon   = report.gasStatus === 'CRITICAL' ? '🔴' : report.gasStatus === 'WARNING' ? '🟡' : '🟢'
+  const change    = report.change24h >= 0
+    ? `+${(report.change24h * 100).toFixed(2)}%`
+    : `${(report.change24h * 100).toFixed(2)}%`
+
+  // ── Chain + token counts ──
+  const chains = [...new Set((report.topPositions || []).map(p => p.chain))].length
+  const tokens = (report.topPositions || []).length
+  const topHolding = report.topPositions?.[0]
+  const topPct = topHolding && report.totalUsd > 0
+    ? `${topHolding.symbol} (${((topHolding.usd / report.totalUsd) * 100).toFixed(1)}%)`
+    : 'N/A'
+
+  // ── DeFi exposure estimate ──
+  const defiExposure = report.topPositions
+    ?.filter(p => !['ETH','USDC','USDT','DAI','WETH'].includes(p.symbol))
+    .reduce((s, p) => s + (p.usd || 0), 0) || 0
+  const defiPct = report.totalUsd > 0 ? ((defiExposure / report.totalUsd) * 100).toFixed(1) : '0.0'
+
+  // ═══════════════════════════════════════
+  // BUILD THE EMBED
+  // ═══════════════════════════════════════
 
   const embed = new EmbedBuilder()
     .setColor(color)
-    .setTitle(title)
-    .setDescription(statusText)
-    .addFields({ name: '🔄 Pipeline', value: stages, inline: false })
-    .setTimestamp()
+    .setTitle(`🔺 TRINITY VERIFICATION REPORT`)
+    .setDescription(
+      `**\`${shortAddr(report.address)}\`** ${riskEmoji} **${riskLevel}**\n` +
+      `\`${report.address}\``
+    )
 
-  if (tis?.rationale) embed.addFields({ name: '💭 Rationale',    value: tis.rationale, inline: false })
-  if (pdr?.notes)     embed.addFields({ name: '🛡️ Auditor notes', value: pdr.notes,    inline: false })
+  // ── Summary Stats Row ──
+  embed.addFields(
+    { name: '💰 TOTAL VALUE',  value: `**$${totalUsd}**`, inline: true },
+    { name: '🎯 RISK SCORE',   value: `**${riskScore}/100**`, inline: true },
+    { name: '⛽ GAS RESERVE',  value: `**${ethBal} ETH**`, inline: true },
+  )
+  embed.addFields(
+    { name: '📊 24H CHANGE',   value: `**${change}**`, inline: true },
+    { name: '🏗️ DEFI EXPOSURE', value: `**${defiPct}%**`, inline: true },
+    { name: '🔗 CHAINS',       value: `**${chains}**`, inline: true },
+  )
 
-  if (execResult?.txHash && !DRY_RUN) {
-    const explorer = tis?.action?.chain === 'base'
-      ? `https://basescan.org/tx/${execResult.txHash}`
-      : `https://etherscan.io/tx/${execResult.txHash}`
-    embed.addFields({ name: '🔗 Transaction', value: `[View on explorer](${explorer})`, inline: false })
+  // ── Separator ──
+  embed.addFields({ name: '\u200b', value: '**━━━━ Agent Reports ━━━━**', inline: false })
+
+  // ── Observer Report ──
+  const observerLines = []
+  observerLines.push(`Portfolio diversified across **${chains} chain${chains !== 1 ? 's' : ''}**.`)
+  observerLines.push(`Gas reserve ${gasIcon} **${ethBal} ETH** (${report.gasStatus}).`)
+  if (report.topPositions?.length > 0) {
+    const posStr = report.topPositions
+      .map(p => `\`${p.symbol}\` $${(p.usd || 0).toFixed(2)}`)
+      .join(' · ')
+    observerLines.push(`Holdings: ${posStr}`)
   }
+  embed.addFields({
+    name: `👁️ Observer ${statusIcon !== '🚫' ? '✅' : '⚠️'}`,
+    value: observerLines.join('\n'),
+    inline: false,
+  })
+
+  // ── Task Manager Report ──
+  if (tis) {
+    const tmLines = []
+    if (tis.intentType === 'ALERT_ONLY') {
+      tmLines.push(`Decision: **ALERT_ONLY** — no action needed.`)
+    } else {
+      tmLines.push(`Intent: **${tis.intentType}** (confidence: ${(tis.confidence * 100).toFixed(0)}%)`)
+      if (tis.action) {
+        const a = tis.action
+        tmLines.push(`Action: ${a.fromToken} → ${a.toToken} on ${a.chain}`)
+        if (a.amount) tmLines.push(`Amount: ${a.amount}`)
+      }
+    }
+    if (tis.rationale) tmLines.push(`\n_${tis.rationale}_`)
+    embed.addFields({
+      name: `📋 Task Manager ${tis.intentType === 'ALERT_ONLY' ? '✅' : '🔄'}`,
+      value: tmLines.join('\n'),
+      inline: false,
+    })
+  }
+
+  // ── Auditor Report ──
+  if (pdr) {
+    const auditIcon = pdr.decision === 'APPROVED' ? '✅' :
+                      pdr.decision === 'REJECTED' ? '❌' : '⚠️'
+    const auditLines = []
+    if (pdr.decision === 'APPROVED') {
+      auditLines.push(`All positions within policy bounds. Gas reserve **${report.gasStatus}**.`)
+      auditLines.push(`Recommend: **APPROVED** for autonomous operation.`)
+    } else if (pdr.decision === 'REJECTED') {
+      auditLines.push(`**REJECTED** — ${pdr.notes || 'Policy violation detected.'}`)
+    } else {
+      auditLines.push(`**NEEDS_REVIEW** — ${pdr.notes || 'Risk threshold exceeded.'}`)
+    }
+    if (pdr.notes && pdr.decision === 'APPROVED') auditLines.push(`\n_${pdr.notes}_`)
+    embed.addFields({
+      name: `🛡️ Auditor ${auditIcon}`,
+      value: auditLines.join('\n'),
+      inline: false,
+    })
+  } else if (tis?.intentType === 'ALERT_ONLY') {
+    embed.addFields({
+      name: `🛡️ Auditor ✅`,
+      value: `No action to audit. Portfolio stable.`,
+      inline: false,
+    })
+  }
+
+  // ── Executor (if applicable) ──
+  if (execResult) {
+    const execLines = []
+    if (DRY_RUN) {
+      execLines.push(`🟡 **DRY_RUN** — transaction simulated, not submitted.`)
+    } else if (execResult.txHash) {
+      const explorer = tis?.action?.chain === 'base'
+        ? `https://basescan.org/tx/${execResult.txHash}`
+        : `https://etherscan.io/tx/${execResult.txHash}`
+      execLines.push(`✅ **Executed** — [\`${execResult.txHash.slice(0, 16)}…\`](${explorer})`)
+    }
+    embed.addFields({
+      name: `⚡ Executor ${DRY_RUN ? '🟡' : '✅'}`,
+      value: execLines.join('\n') || 'Completed',
+      inline: false,
+    })
+  }
+
+  // ── Footer Badges ──
+  const badges = [
+    `${tokens} tokens`,
+    `${chains} chains`,
+    `Top: ${topPct}`,
+    `Gas: ${report.gasStatus}`,
+  ]
+  if (status === 'ALERT_ONLY') badges.push('📋 Alert only')
+  if (status === 'REJECTED')   badges.push('🚫 Rejected')
+  if (status === 'NEEDS_REVIEW') badges.push('⚠️ Review needed')
+
+  embed.addFields({
+    name: '\u200b',
+    value: badges.map(b => `\`${b}\``).join('  '),
+    inline: false,
+  })
+
+  embed.setFooter({ text: `OmnisysX Trinity` })
+  embed.setTimestamp()
+
   return embed
 }
 
@@ -201,8 +389,11 @@ function embedHelp() {
           '`/watchlist` — list watched wallets' },
       { name: '🛡️ Security', value:
           '`/policy` — view active agent token policy' },
+      { name: '💬 Orchestrator', value:
+          '`/ask <question>` — chat with the Web3 expert\n' +
+          '`/ask <question> wallet:<address>` — with wallet context' },
     )
-    .setFooter({ text: `Mode: ${DRY_RUN ? 'DRY_RUN (safe)' : 'LIVE'} · Model: Haiku 4.5` })
+    .setFooter({ text: `Mode: ${DRY_RUN ? 'DRY_RUN (safe)' : 'LIVE'}` })
 }
 
 // ============================================================
@@ -214,6 +405,9 @@ const commandDefs = [
     .addStringOption(o => o.setName('address').setDescription('Wallet address (0x... or ENS)').setRequired(false)),
   new SlashCommandBuilder().setName('run').setDescription('Trigger the full pipeline (Observe → Plan → Audit → Execute)')
     .addStringOption(o => o.setName('address').setDescription('Wallet address').setRequired(false)),
+  new SlashCommandBuilder().setName('ask').setDescription('Ask the Orchestrator about Web3, DeFi, or your wallet')
+    .addStringOption(o => o.setName('question').setDescription('Your question about Web3/DeFi').setRequired(true))
+    .addStringOption(o => o.setName('wallet').setDescription('Wallet address for context (optional)').setRequired(false)),
   new SlashCommandBuilder().setName('policy').setDescription('Show active agent token policy'),
   new SlashCommandBuilder().setName('watch').setDescription('Add a wallet to the watchlist')
     .addStringOption(o => o.setName('address').setDescription('Wallet address').setRequired(true))
@@ -236,19 +430,26 @@ async function registerCommands() {
 // CLIENT + INTERACTION HANDLER
 // ============================================================
 
-const client = new Client({ intents: [GatewayIntentBits.Guilds] })
+const client = new Client({
+  intents: [
+    GatewayIntentBits.Guilds,
+    GatewayIntentBits.GuildMessages,
+    GatewayIntentBits.MessageContent,
+  ],
+})
 
-client.once('ready', async () => {
+client.once(Events.ClientReady, async () => {
   console.log(`\n✓ ${client.user.tag} online in ${client.guilds.cache.size} server(s)`)
   console.log(`  Mode:    ${DRY_RUN ? 'DRY_RUN (safe)' : '🔴 LIVE'}`)
   console.log(`  Default: ${DEFAULT_WALLET || '(none)'}`)
+  console.log(`  LLM:     ${OPENROUTER_KEY ? 'OpenRouter ✓' : '❌ MISSING KEY'} (${MODEL})`)
   if (ALERT_CHANNEL_ID) {
     console.log(`  Alerts:  every ${POLL_INTERVAL_MS / 1000}s → channel ${ALERT_CHANNEL_ID}`)
     startPollingLoop()
   }
 })
 
-client.on('interactionCreate', async (interaction) => {
+client.on(Events.InteractionCreate, async (interaction) => {
   if (!interaction.isChatInputCommand()) return
 
   try {
@@ -258,6 +459,102 @@ client.on('interactionCreate', async (interaction) => {
     const msg = `❌ Error: ${e.message}`
     if (interaction.deferred || interaction.replied) await interaction.editReply({ content: msg })
     else await interaction.reply({ content: msg, flags: MessageFlags.Ephemeral })
+  }
+})
+
+// ============================================================
+// @MENTION HANDLER — Orchestrator chat via mentions
+// ============================================================
+
+client.on(Events.MessageCreate, async (message) => {
+  if (message.author.bot) return
+  if (!message.mentions.has(client.user)) return
+
+  console.log(`[mention] Message from ${message.author.tag}: "${message.content.slice(0, 100)}"`)
+
+  const question = message.content.replace(/<@!?\d+>/g, '').trim()
+
+  if (!question) {
+    console.log('[mention] Empty question, sending hint')
+    await message.channel.send('🧠 Mention me with a question! Example: `@OmnisysX what is Aave?`')
+    return
+  }
+
+  try { await message.channel.sendTyping() } catch {}
+
+  const walletMatch = question.match(/0x[a-fA-F0-9]{40}/)
+  const walletAddr = walletMatch ? walletMatch[0] : DEFAULT_WALLET
+
+  // Build wallet context
+  let walletContext = ''
+  if (walletAddr) {
+    try {
+      const snap = await getPortfolioSnapshot(walletAddr)
+      const positions = snap.topPositions
+        .map(p => `${p.symbol} on ${p.chain}: $${(p.value || 0).toFixed(2)}`)
+        .join(', ')
+      walletContext = `\n\n[WALLET CONTEXT]\nAddress: ${walletAddr}\nTotal Value: $${snap.totalUsd.toFixed(2)}\nETH Balance: ${snap.ethBalance.toFixed(6)} ETH\nGas Status: ${snap.gasStatus}\n24h Change: ${(snap.change24h * 100).toFixed(2)}%\nTop Positions: ${positions}\n[END WALLET CONTEXT]`
+      console.log('[mention] Wallet context loaded')
+    } catch (e) {
+      console.log(`[mention] Wallet context failed: ${e.message}`)
+    }
+  }
+
+  console.log(`[mention] Calling OpenRouter model=${MODEL}`)
+
+  try {
+    const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${OPENROUTER_KEY}`,
+        'HTTP-Referer': 'https://omnisysx.io',
+        'X-Title': 'OmnisysX Orchestrator',
+      },
+      body: JSON.stringify({
+        model: MODEL,
+        max_tokens: 600,
+        temperature: 0.4,
+        messages: [
+          { role: 'system', content: ORCHESTRATOR_PROMPT },
+          { role: 'user', content: question + walletContext },
+        ],
+      }),
+    })
+
+    console.log(`[mention] OpenRouter response: ${res.status}`)
+
+    if (!res.ok) {
+      const errBody = await res.text()
+      console.error(`[mention] OpenRouter FAIL ${res.status}: ${errBody}`)
+      await message.channel.send('❌ Could not generate a response right now.')
+      return
+    }
+
+    const data = await res.json()
+    const answer = data.choices?.[0]?.message?.content || 'No response generated.'
+    const truncated = answer.length > 1900 ? answer.slice(0, 1900) + '…' : answer
+
+    // Try embed first, fallback to plain text if missing Embed Links permission
+    try {
+      const embed = new EmbedBuilder()
+        .setColor(COLORS.purple)
+        .setTitle('🧠 Orchestrator')
+        .setDescription(truncated)
+        .setFooter({ text: `OmnisysX · ${walletAddr ? shortAddr(walletAddr) : 'No wallet'}` })
+        .setTimestamp()
+      await message.channel.send({ embeds: [embed] })
+      console.log('[mention] Embed sent ✓')
+    } catch {
+      // Fallback: send as plain text
+      await message.channel.send(`🧠 **Orchestrator**\n\n${truncated}`)
+      console.log('[mention] Sent as plain text (embed permission missing)')
+    }
+  } catch (e) {
+    console.error('[mention] CATCH ERROR:', e.message)
+    try { await message.channel.send('❌ Error processing your question.') } catch (e2) {
+      console.error('[mention] Even channel.send failed:', e2.message)
+    }
   }
 })
 
@@ -300,6 +597,67 @@ const commandHandlers = {
       },
     }
     await saveState(state)
+  },
+
+  async ask(i) {
+    const question = i.options.getString('question')
+    const walletAddr = i.options.getString('wallet') || DEFAULT_WALLET
+
+    await i.deferReply()
+
+    // Build wallet context if available
+    let walletContext = ''
+    if (walletAddr) {
+      try {
+        const snap = await getPortfolioSnapshot(walletAddr)
+        const positions = snap.topPositions
+          .map(p => `${p.symbol} on ${p.chain}: $${(p.value || 0).toFixed(2)}`)
+          .join(', ')
+        walletContext = `\n\n[WALLET CONTEXT]\nAddress: ${walletAddr}\nTotal Value: $${snap.totalUsd.toFixed(2)}\nETH Balance: ${snap.ethBalance.toFixed(6)} ETH\nGas Status: ${snap.gasStatus}\n24h Change: ${(snap.change24h * 100).toFixed(2)}%\nTop Positions: ${positions}\n[END WALLET CONTEXT]`
+      } catch (e) {
+        walletContext = `\n\n[WALLET CONTEXT]\nAddress: ${walletAddr}\nNote: Could not fetch wallet data (${e.message})\n[END WALLET CONTEXT]`
+      }
+    }
+
+    // Call OpenRouter
+    const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${OPENROUTER_KEY}`,
+        'HTTP-Referer': 'https://omnisysx.io',
+        'X-Title': 'OmnisysX Orchestrator',
+      },
+      body: JSON.stringify({
+        model: MODEL,
+        max_tokens: 600,
+        temperature: 0.4,
+        messages: [
+          { role: 'system', content: ORCHESTRATOR_PROMPT },
+          { role: 'user', content: question + walletContext },
+        ],
+      }),
+    })
+
+    if (!res.ok) {
+      const errText = await res.text()
+      return i.editReply({ content: `❌ LLM error: ${res.status}` })
+    }
+
+    const data = await res.json()
+    const answer = data.choices?.[0]?.message?.content || 'No response generated.'
+
+    // Truncate if too long for Discord (2000 char limit)
+    const truncated = answer.length > 1900 ? answer.slice(0, 1900) + '…' : answer
+
+    const embed = new EmbedBuilder()
+      .setColor(COLORS.purple)
+      .setTitle('🧠 Orchestrator')
+      .setDescription(truncated)
+      .setFooter({ text: `OmnisysX · ${walletAddr ? shortAddr(walletAddr) : 'No wallet context'}` })
+      .setTimestamp()
+
+    await i.editReply({ embeds: [embed] })
   },
 
   async policy(i) {
@@ -430,3 +788,7 @@ process.on('SIGINT', () => {
   client.destroy()
   process.exit(0)
 })
+
+// Prevent crashes on unhandled errors
+client.on('error', (e) => console.error('[discord-client]', e))
+process.on('unhandledRejection', (e) => console.error('[unhandled]', e))
