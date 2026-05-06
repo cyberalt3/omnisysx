@@ -1,0 +1,12 @@
+{
+  "name": "@omnisysx/agent",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "agent.mjs",
+  "scripts": {
+    "start": "node agent.mjs"
+  },
+  "dependencies": {
+    "dotenv": "^16.4.0"
+  }
+}
