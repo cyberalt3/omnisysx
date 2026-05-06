@@ -3,7 +3,7 @@
  * ----------------------------------------------------------
  * A production-grade autonomous DeFi pipeline that observes
  * wallets, reasons about risk, and executes onchain swaps —
- * built on top of the Zerion HTTP API and OpenRouter LLM gateway.
+ * built on top of the Zerion CLI fork and OpenRouter LLM gateway.
  *
  * Pipeline (the "V Pattern"):
  *
@@ -114,7 +114,6 @@ function computeGasStatus(eth) {
 
 // ============================================================
 // STAGES 2 + 3 — TASK MANAGER (REASON + PLAN)
-// LLM decides whether to act and produces a Transaction Intent.
 // ============================================================
 
 const TASK_MANAGER_PROMPT = `You are the Task Manager of OmnisysX, a DeFi agent.
@@ -163,8 +162,6 @@ async function runTaskManager(report) {
 
 // ============================================================
 // STAGE 4 — AUDITOR (AUTHORIZE)
-// Independent security check. The pipeline halts here unless
-// the auditor signs off (APPROVED). Acts as the policy gate.
 // ============================================================
 
 const AUDITOR_PROMPT = `You are the Auditor of OmnisysX — the security gate of the pipeline.
@@ -203,8 +200,7 @@ async function runAuditor(tis, report) {
 }
 
 // ============================================================
-// STAGE 5 — EXECUTOR
-// Executes the swap via Zerion CLI using the agent token.
+// STAGE 5 — EXECUTOR (via Zerion CLI)
 // ============================================================
 
 async function runExecutor(tis) {
@@ -254,7 +250,6 @@ function buildZerionCommand(tis) {
 
 // ============================================================
 // STAGE 6 — VERIFY
-// Re-fetches portfolio after execution and reports the delta.
 // ============================================================
 
 async function runVerify(execResult, beforeReport) {
@@ -265,7 +260,7 @@ async function runVerify(execResult, beforeReport) {
     return { ok: true }
   }
 
-  await sleep(8000) // wait for Zerion to index
+  await sleep(8000)
 
   const after = await runObserver(beforeReport.address)
   const deltaUsd = after.totalUsd - beforeReport.totalUsd
@@ -279,6 +274,7 @@ async function runVerify(execResult, beforeReport) {
 // HELPERS
 // ============================================================
 
+// Zerion HTTP API — used for reading wallet data (Observer)
 async function zerionGet(path) {
   const res = await fetch(`https://api.zerion.io/v1${path}`, {
     headers: {
@@ -288,6 +284,16 @@ async function zerionGet(path) {
   })
   if (!res.ok) throw new Error(`Zerion API ${res.status}: ${await res.text()}`)
   return res.json()
+}
+
+// Zerion CLI — used for executing swaps, policies, and wallet ops
+export async function zerionCli(args) {
+  try {
+    const { stdout } = await exec('zerion', args, { env: process.env, maxBuffer: 10 * 1024 * 1024 })
+    try { return JSON.parse(stdout) } catch { return { raw: stdout } }
+  } catch (e) {
+    throw new Error(`zerion ${args[0]} failed: ${e.stderr || e.message}`)
+  }
 }
 
 async function askClaude(systemPrompt, userPrompt, opts = {}) {
@@ -364,6 +370,17 @@ export async function runPipeline(address = TARGET_ADDRESS) {
     log.err(`pipeline failed: ${e.message}`)
     throw e
   }
+}
+
+// Direct swap execution (used by bot @mention commands)
+export async function executeSwap({ fromToken, toToken, amount, chain }) {
+  const cmd = ['swap', fromToken, toToken, String(amount),
+               '--chain', chain, '--wallet', AGENT_WALLET_NAME, '--json']
+  log.stage('SWAP', `${amount} ${fromToken} → ${toToken} on ${chain}`)
+  const result = await zerionCli(cmd)
+  const txHash = result.txHash || result.transaction?.hash || result.hash
+  log.ok(`tx: ${txHash || 'pending'}`)
+  return { txHash, raw: result }
 }
 
 // Run if invoked directly (not imported)
