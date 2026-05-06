@@ -9,8 +9,8 @@
     "bot"
   ],
   "scripts": {
-    "agent":    "node agent/agent.mjs",
-    "bot":      "node bot/bot.mjs",
+    "agent": "node agent/agent.mjs",
+    "bot": "node bot/bot.mjs",
     "agent:dry": "EXECUTOR_DRY_RUN=true node agent/agent.mjs",
     "test:obs": "node scripts/test-observer.mjs"
   },
@@ -32,5 +32,8 @@
     "discord-bot",
     "onchain",
     "base"
-  ]
+  ],
+  "dependencies": {
+    "viem": "^2.48.8"
+  }
 }

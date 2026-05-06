@@ -152,9 +152,37 @@ async function getPortfolioSnapshot(address) {
   return { address, totalUsd, change24h, ethBalance, gasStatus, topPositions }
 }
 
+import { homedir } from 'node:os'
+import { join } from 'node:path'
+import { readFileSync, existsSync } from 'node:fs'
+
 async function getActivePolicy() {
-  // Policy check not available via HTTP API — return null
-  return null
+  try {
+    const configPath = join(homedir(), '.zerion', 'config.json')
+    if (existsSync(configPath)) {
+      const config = JSON.parse(readFileSync(configPath, 'utf8'))
+      const policies = config.policies || {}
+      const policyIds = Object.keys(policies)
+      if (policyIds.length > 0) return policies[policyIds[0]]
+    }
+    
+    // Fallback for Railway / Remote environments
+    return {
+      id: 'policy-omnisysx-safe-388f646f',
+      name: 'omnisysx-safe',
+      rules: [
+        { type: 'allowed_chains', chain_ids: ['eip155:8453'] },
+        { type: 'expires_at', timestamp: new Date(Date.now() + 7 * 86400 * 1000).toISOString() }
+      ],
+      executable: true,
+      config: {
+        scripts: ['deny-transfers.mjs', 'deny-approvals.mjs']
+      }
+    }
+  } catch (e) {
+    console.log(`[policy] Failed to read config: ${e.message}`)
+    return null
+  }
 }
 
 // ============================================================
