@@ -24,7 +24,10 @@ import { Client, GatewayIntentBits, Events, EmbedBuilder, REST, Routes,
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { readFile, writeFile } from 'node:fs/promises'
-import { runPipeline } from '../agent/agent.mjs'
+import { readFileSync, writeFileSync, existsSync } from 'node:fs'
+import { join } from 'node:path'
+import { homedir } from 'node:os'
+import { runPipeline, zerionCli, executeSwap } from '../agent/agent.mjs'
 import 'dotenv/config'
 
 const exec = promisify(execFile)
@@ -33,20 +36,21 @@ const exec = promisify(execFile)
 // CONFIG
 // ============================================================
 
-const DISCORD_TOKEN     = process.env.DISCORD_BOT_TOKEN
-const DISCORD_CLIENT_ID = process.env.DISCORD_CLIENT_ID
+const DISCORD_TOKEN     = process.env.DISCORD_TOKEN || process.env.DISCORD_BOT_TOKEN
+const DISCORD_CLIENT_ID = process.env.DISCORD_CLIENT_ID || process.env.DISCORD_APP_ID
 const OPENROUTER_KEY    = process.env.OPENROUTER_API_KEY
 const ALERT_CHANNEL_ID  = process.env.ALERT_CHANNEL_ID
 const POLL_INTERVAL_MS  = parseInt(process.env.POLL_INTERVAL_MS || '300000')
 const DEFAULT_WALLET    = process.env.AGENT_WALLET_ADDRESS
+const DEFAULT_SOL_WALLET = process.env.AGENT_SOLANA_ADDRESS
 const MIN_ETH_GAS       = parseFloat(process.env.MIN_ETH_GAS_RESERVE || '0.002')
-const DRY_RUN           = process.env.EXECUTOR_DRY_RUN !== 'false'
+const DRY_RUN           = process.env.FORCE_DRY_RUN === 'true'
 const MODEL             = process.env.LLM_MODEL || process.env.AGENT_MODEL || 'anthropic/claude-3.5-haiku'
 const STATE_FILE        = './bot-state.json'
 
 if (!DISCORD_TOKEN || !DISCORD_CLIENT_ID) {
-  console.error('FATAL: DISCORD_BOT_TOKEN and DISCORD_CLIENT_ID must be set in .env')
-  process.exit(1)
+  console.error('FATAL: DISCORD_TOKEN (ou DISCORD_BOT_TOKEN) e DISCORD_CLIENT_ID devem estar no .env');
+  process.exit(1);
 }
 if (!OPENROUTER_KEY) {
   console.error('WARNING: OPENROUTER_API_KEY not set — Orchestrator will not work')
@@ -61,6 +65,151 @@ const ICONS  = {
   observer: '🔭', planner: '🧠', auditor: '🛡️', executor: '⚡',
   verify:   '✅', alert:   '🚨', ok:      '✓',  fail:    '✗',
 }
+
+// ============================================================
+// AUTO-IMPORT WALLET ON STARTUP (Railway Support)
+// ============================================================
+import { execSync } from 'node:child_process'
+
+async function initAgentWallet() {
+  console.log('🚀 [SYSTEM] OMNISYS-X REBOOTING WITH DUAL-TOKEN DEBUG MODE...')
+  const privateKey = process.env.AGENT_PRIVATE_KEY
+  const solanaKey  = process.env.AGENT_SOLANA_PRIVATE_KEY
+
+  if (!privateKey && !solanaKey) {
+    console.log(`[setup] ⚠️ No AGENT keys found in ENV.`)
+    return
+  }
+
+  // Windows local machine (CLI is broken due to missing msvc bindings)
+  if (process.platform === 'win32') {
+    console.log(`[setup] Windows detectado. A CLI do hackathon está quebrada no Windows (falta core-win32-x64-msvc).`)
+    return
+  }
+
+  try {
+    console.log(`[setup] Injetando carteira via API do OWS no Railway...`)
+    // No Railway o zerion-cli fica na pasta global do npm ou do yarn
+    const globalPrefix = execSync('npm root -g').toString().trim()
+    const keystorePath = join(globalPrefix, 'zerion-cli', 'cli', 'utils', 'wallet', 'keystore.js')
+    
+    const keystore = await import(`file://${keystorePath}`)
+    
+    // Importa EVM se houver
+    if (privateKey) {
+      try { keystore.deleteWallet('omnisysx-bot') } catch(e){}
+      keystore.importFromKey('omnisysx-bot', privateKey, '200418@', 'ethereum')
+    }
+
+    // Importa Solana se houver
+    if (solanaKey) {
+      try { keystore.deleteWallet('omnisysx-bot-sol') } catch(e){}
+      keystore.importFromKey('omnisysx-bot-sol', solanaKey, '200418@', 'solana')
+    }
+    
+    // Variáveis de ambiente da Zerion (Caminho Dinâmico)
+    const homeDir = homedir()
+    const zerionDir = join(homeDir, '.zerion')
+    const configPath = join(zerionDir, 'config.json')
+    console.log(`[setup] 📂 Usando Home Directory: ${homeDir}`)
+
+    // Plano Nuclear: Extrai o bundle de configuração se existir
+    const bundle = process.env.ZERION_CONFIG_BUNDLE
+    if (bundle) {
+      try {
+        console.log('[setup] 📦 Detectado ZERION_CONFIG_BUNDLE. Clonando ambiente do PC...')
+        const buffer = Buffer.from(bundle, 'base64')
+        const backupPath = join(homeDir, 'zerion_restore.tar.gz')
+        writeFileSync(backupPath, buffer)
+        execSync(`mkdir -p ${zerionDir}`)
+        execSync(`tar -xzf ${backupPath} -C ${homeDir}`)
+        console.log('[setup] ✅ Ambiente clonado com sucesso!')
+      } catch (e) {
+        console.log(`[setup] ⚠️ Falha ao extrair bundle: ${e.message}`)
+      }
+    }
+
+    const fs = await import('node:fs')
+    // ============================================================
+    // 💉 INJEÇÃO MANUAL DE TOKENS (Sempre sobrescreve o bundle/CLI)
+    // ============================================================
+    try {
+      if (!fs.existsSync(zerionDir)) execSync(`mkdir -p ${zerionDir}`)
+      
+      let config = { agentTokens: {} }
+      if (fs.existsSync(configPath)) {
+        try { config = JSON.parse(fs.readFileSync(configPath, 'utf8')) } catch (e) { config = { agentTokens: {} } }
+      }
+
+      config.apiKey = process.env.ZERION_API_KEY || config.apiKey
+      config.agentTokens ??= {}
+      
+      if (process.env.ZERION_AGENT_TOKEN) {
+        config.agentTokens['omnisysx-bot'] = process.env.ZERION_AGENT_TOKEN
+        const t = process.env.ZERION_AGENT_TOKEN
+        console.log(`[setup] 💉 Token EVM: ${t.slice(0,10)}...${t.slice(-4)}`)
+      }
+      
+      if (process.env.ZERION_AGENT_TOKEN_SOL) {
+        config.agentTokens['omnisysx-bot-sol'] = process.env.ZERION_AGENT_TOKEN_SOL
+        const t = process.env.ZERION_AGENT_TOKEN_SOL
+        console.log(`[setup] 💉 Token Solana: ${t.slice(0,10)}...${t.slice(-4)}`)
+      }
+      
+      fs.writeFileSync(configPath, JSON.stringify(config, null, 2))
+      console.log(`[setup] ✅ config.json sincronizado em ${configPath}`)
+    } catch (e) {
+      console.log(`[setup] ⚠️ Falha ao sincronizar config.json: ${e.message}`)
+    }
+
+    // DEBUG: Lista o que a CLI vê
+    try {
+      console.log('[setup] 🔧 Verificando estado da CLI...')
+      const tokens = execSync('zerion agent list-tokens --json', { encoding: 'utf8' })
+      console.log(`[debug] CLI Tokens (JSON): ${tokens}`)
+    } catch (e) {
+      console.log(`[debug] Erro ao listar tokens: ${e.message}`)
+    }
+
+    // ============================================================
+    // 🛠️ MONKEY-PATCH DEFINITIVO: CORREÇÃO DO ERRO 'to is required'
+    // A CLI oficial só manda o 'to' em bridges. A API da Zerion
+    // agora exige o 'to' em TODOS os swaps. Vamos forçar isso!
+    // ============================================================
+    const swapJsPath = join(globalPrefix, 'zerion-cli', 'cli', 'utils', 'trading', 'swap.js')
+    if (fs.existsSync(swapJsPath)) {
+      let code = fs.readFileSync(swapJsPath, 'utf8')
+      
+      // Procura o bloco condicional que decide se manda o 'to' ou não
+      const targetPattern = /if\s*\(\s*outputReceiver\s*&&\s*outputReceiver\s*!==\s*walletAddress\s*\)\s*{\s*params\.to\s*=\s*outputReceiver;\s*}/
+      
+      if (targetPattern.test(code)) {
+        console.log(`[setup] ⚡ Aplicando Patch Core: Forçando parâmetro 'to' em todos os swaps...`)
+        // Substitui a condicional por uma atribuição direta
+        code = code.replace(targetPattern, "params.to = outputReceiver || walletAddress;")
+        fs.writeFileSync(swapJsPath, code)
+      } else {
+        // Fallback para versões minificadas (comum no Railway)
+        const minifiedPattern = /if\s*\([a-zA-Z0-9_$]+\s*&&\s*[a-zA-Z0-9_$]+\s*!==\s*[a-zA-Z0-9_$]+\s*\)\s*[a-zA-Z0-9_$]+\.to\s*=\s*[a-zA-Z0-9_$]+;/
+        if (minifiedPattern.test(code)) {
+           console.log(`[setup] ⚡ Aplicando Patch Core (Minified)...`)
+           // Aqui fazemos uma substituição mais genérica mas segura
+           code = code.replace(/if\s*\(([a-zA-Z0-9_$]+)\s*&&\s*\1\s*!==\s*([a-zA-Z0-9_$]+)\s*\)\s*([a-zA-Z0-9_$]+)\.to\s*=\s*\1\s*;/, "$3.to = $1 || $2;")
+           fs.writeFileSync(swapJsPath, code)
+        } else {
+           console.log(`[setup] ⚠️ Não foi possível aplicar o Patch Core. Padrão não encontrado.`)
+        }
+      }
+    } else {
+      console.log(`[setup] ATENÇÃO: Arquivo swap.js não encontrado em ${swapJsPath}`)
+    }
+
+    console.log(`[setup] ✅ Carteira e Agent Token importados no Railway com sucesso!`)
+  } catch (e) {
+    console.error(`[setup] ❌ Erro ao importar:`, e.message)
+  }
+}
+
 
 // ============================================================
 // ORCHESTRATOR — Web3 Expert System Prompt
@@ -126,6 +275,7 @@ async function zerionGet(path) {
 }
 
 async function getPortfolioSnapshot(address) {
+  // Se for o endereço do agente, tentamos pegar o portfolio completo de todas as redes associadas
   const [posData, portData] = await Promise.all([
     zerionGet(`/wallets/${address}/positions/?filter[positions]=only_simple&currency=usd&sort=value&filter[trash]=only_non_trash`),
     zerionGet(`/wallets/${address}/portfolio?currency=usd`),
@@ -144,17 +294,23 @@ async function getPortfolioSnapshot(address) {
 
   const totalUsd = portData.data?.attributes?.total?.positions || positions.reduce((s, p) => s + p.value, 0)
   const change24h = portData.data?.attributes?.changes?.percent_1d || 0
-  const ethPos = positions.find(p => p.symbol === 'ETH' && (p.chain === 'ethereum' || p.chain === 'base'))
-  const ethBalance = ethPos?.quantity ?? 0
-  const gasStatus = ethBalance < MIN_ETH_GAS ? 'CRITICAL' : ethBalance < MIN_ETH_GAS * 2 ? 'WARNING' : 'SAFE'
-  const topPositions = positions.sort((a, b) => b.value - a.value).slice(0, 5)
+  
+  // Detecção dinâmica de gás (SOL ou ETH)
+  const solGas = positions.find(p => p.symbol === 'SOL' && p.chain === 'solana')
+  const ethGas = positions.find(p => p.symbol === 'ETH' && (p.chain === 'ethereum' || p.chain === 'base'))
+  
+  const gasAsset = solGas || ethGas
+  const gasBalance = gasAsset?.quantity ?? 0
+  const gasSymbol = gasAsset?.symbol || 'ETH'
+  const minGas = gasSymbol === 'SOL' ? 0.01 : MIN_ETH_GAS
+  const gasStatus = gasBalance < minGas ? 'CRITICAL' : gasBalance < minGas * 2 ? 'WARNING' : 'SAFE'
+  
+  const topPositions = positions.sort((a, b) => b.value - a.value).slice(0, 8)
 
-  return { address, totalUsd, change24h, ethBalance, gasStatus, topPositions }
+  return { address, totalUsd, change24h, gasBalance, gasSymbol, gasStatus, topPositions, solGas, ethGas }
 }
 
-import { homedir } from 'node:os'
-import { join } from 'node:path'
-import { readFileSync, existsSync } from 'node:fs'
+
 
 async function getActivePolicy() {
   try {
@@ -196,23 +352,30 @@ function embedPortfolio(snap) {
                    snap.gasStatus === 'WARNING'  ? COLORS.amber : COLORS.green
   const gasIcon  = snap.gasStatus === 'CRITICAL' ? '🔴' :
                    snap.gasStatus === 'WARNING'  ? '🟡' : '🟢'
+  
   const change   = snap.change24h >= 0
     ? `📈 +${(snap.change24h * 100).toFixed(2)}%`
     : `📉 ${(snap.change24h * 100).toFixed(2)}%`
+    
   const positions = snap.topPositions
-    .map(p => `\`${p.symbol.padEnd(6)}\` ${p.chain} — $${(p.value || 0).toFixed(2)}`)
+    .map(p => `\`${p.symbol.padEnd(6)}\` **${p.chain}** — $${(p.value || 0).toFixed(2)}`)
     .join('\n') || '_no positions_'
+
+  const gasInfo = []
+  if (snap.ethGas) gasInfo.push(`⛽ **${snap.ethGas.quantity.toFixed(4)} ETH** (Base/Eth)`)
+  if (snap.solGas) gasInfo.push(`☀️ **${snap.solGas.quantity.toFixed(4)} SOL** (Solana)`)
+  if (gasInfo.length === 0) gasInfo.push(`${gasIcon} **${snap.gasBalance.toFixed(6)} ${snap.gasSymbol}**`)
 
   return new EmbedBuilder()
     .setColor(gasColor)
     .setTitle(`${ICONS.observer} Portfolio Snapshot`)
-    .setDescription(`**Wallet:** \`${shortAddr(snap.address)}\``)
+    .setDescription(`**Wallet EVM:** \`${shortAddr(snap.address)}\` ${DEFAULT_SOL_WALLET ? `\n**Wallet SOL:** \`${shortAddr(DEFAULT_SOL_WALLET)}\`` : ''}`)
     .addFields(
       { name: '💰 Total Value', value: `**$${snap.totalUsd.toFixed(2)}** ${change}`, inline: true },
-      { name: '⛽ Gas Reserve', value: `${gasIcon} **${snap.ethBalance.toFixed(6)} ETH**\n_${snap.gasStatus}_`, inline: true },
+      { name: '⛽ Gas Reserves', value: gasInfo.join('\n'), inline: true },
       { name: '🏆 Top Positions', value: positions, inline: false },
     )
-    .setFooter({ text: 'OmnisysX · Powered by Zerion CLI' })
+    .setFooter({ text: 'OmnisysX · Multi-Chain Agent' })
     .setTimestamp()
 }
 
@@ -445,6 +608,17 @@ const commandDefs = [
   new SlashCommandBuilder().setName('watchlist').setDescription('Show watched wallets in this server'),
   new SlashCommandBuilder().setName('status').setDescription('Show the last pipeline execution'),
   new SlashCommandBuilder().setName('help').setDescription('Show available commands'),
+  new SlashCommandBuilder().setName('bridge').setDescription('Execute a cross-chain bridge via LI.FI')
+    .addStringOption(o => o.setName('amount').setDescription('Amount to bridge (e.g. 0.00045)').setRequired(true))
+    .addStringOption(o => o.setName('from_chain').setDescription('Origin network (e.g. base, eth, arbitrum)').setRequired(true))
+    .addStringOption(o => o.setName('to_chain').setDescription('Destination network (e.g. arbitrum, polygon)').setRequired(true))
+    .addStringOption(o => o.setName('from_token').setDescription('Token symbol (e.g. ETH, USDC)').setRequired(true))
+    .addStringOption(o => o.setName('to_token').setDescription('Token symbol (e.g. ETH, USDT)').setRequired(true)),
+  new SlashCommandBuilder().setName('swap').setDescription('Execute a same-chain token swap via Zerion')
+    .addStringOption(o => o.setName('chain').setDescription('Network (e.g. base, eth, arbitrum, solana)').setRequired(true))
+    .addStringOption(o => o.setName('amount').setDescription('Amount to swap (e.g. 0.001)').setRequired(true))
+    .addStringOption(o => o.setName('from').setDescription('Token to sell (e.g. ETH)').setRequired(true))
+    .addStringOption(o => o.setName('to').setDescription('Token to buy (e.g. USDC)').setRequired(true)),
 ].map(c => c.toJSON())
 
 async function registerCommands() {
@@ -504,16 +678,121 @@ client.on(Events.MessageCreate, async (message) => {
 
   if (!question) {
     console.log('[mention] Empty question, sending hint')
-    await message.channel.send('🧠 Mention me with a question! Example: `@OmnisysX what is Aave?`')
+    await message.channel.send('🧠 Mention me with a question! Example: `@OmnisysX what is Aave?` or `@OmnisysX swap 0.5 USDC to ETH on base`')
     return
   }
 
   try { await message.channel.sendTyping() } catch {}
 
+  // ── SWAP COMMAND via @mention ──
+  // Regex aprimorada para detectar swaps em qualquer rede
+  const swapMatch = question.match(/swap\s+([\d.]+)\s+(\w+)\s+(?:to|→|->|for)\s+(\w+)(?:\s+(?:on|chain)\s+(\w+))?/i)
+  if (swapMatch) {
+    let [, amount, fromToken, toToken, chain] = swapMatch
+    chain = chain || 'base' // Default para base se não especificado
+    
+    // Normalização de nomes de redes
+    if (chain.toLowerCase() === 'sol') chain = 'solana'
+    if (chain.toLowerCase() === 'eth') chain = 'ethereum'
+    if (chain.toLowerCase() === 'poly') chain = 'polygon'
+
+    console.log(`[swap] Detected: ${amount} ${fromToken} → ${toToken} on ${chain}`)
+
+    try {
+      // Determina qual carteira checar o gás
+      const checkAddr = chain.toLowerCase() === 'solana' ? DEFAULT_SOL_WALLET : DEFAULT_WALLET
+      const snap = await getPortfolioSnapshot(checkAddr || DEFAULT_WALLET)
+      
+      if (snap.gasStatus === 'CRITICAL') {
+        await message.channel.send(`🔴 **SWAP BLOCKED** — Gas reserve for **${chain.toUpperCase()}** is CRITICAL. Refuel ${snap.gasSymbol} first.`)
+        return
+      }
+
+      await message.channel.send(`⚡ **Executing swap via Zerion CLI...**\n\`${amount} ${fromToken.toUpperCase()} → ${toToken.toUpperCase()} on ${chain.toUpperCase()}\``)
+
+      const result = await executeSwap({
+        fromToken: fromToken.toUpperCase(),
+        toToken: toToken.toUpperCase(),
+        amount,
+        chain: chain.toLowerCase(),
+      })
+
+      const txHash = result.txHash || 'pending'
+      let explorer = `https://etherscan.io/tx/${txHash}`
+      if (chain.toLowerCase() === 'base') explorer = `https://basescan.org/tx/${txHash}`
+      if (chain.toLowerCase() === 'solana') explorer = `https://solscan.io/tx/${txHash}`
+
+      try {
+        const embed = new EmbedBuilder()
+          .setColor(COLORS.green)
+          .setTitle('✅ Swap Executed')
+          .setDescription(`**${amount} ${fromToken.toUpperCase()} → ${toToken.toUpperCase()}** on ${chain.toUpperCase()}`)
+          .addFields(
+            { name: '🔗 Transaction', value: txHash !== 'pending' ? `[\`${txHash.slice(0, 20)}…\`](${explorer})` : '⏳ Pending...', inline: false },
+            { name: '⛽ Gas Status', value: `**${snap.gasBalance.toFixed(4)} ${snap.gasSymbol}** (${snap.gasStatus})`, inline: true },
+            { name: '🏗️ Chain', value: chain.toLowerCase(), inline: true },
+          )
+          .setFooter({ text: 'OmnisysX · Zerion CLI Executor' })
+          .setTimestamp()
+        await message.channel.send({ embeds: [embed] })
+      } catch {
+        await message.channel.send(`✅ **Swap Executed!**\n${amount} ${fromToken.toUpperCase()} → ${toToken.toUpperCase()} on ${chain}\nTx: \`${txHash}\`\n${txHash !== 'pending' ? explorer : ''}`)
+      }
+
+      console.log(`[swap] Success: tx=${txHash}`)
+    } catch (e) {
+      console.error(`[swap] FAILED:`, e.message)
+      await message.channel.send(`❌ **Swap failed:** ${e.message}`)
+    }
+    return
+  }
+
+  // ── BRIDGE COMMAND via @mention ──
+  const bridgeMatch = question.match(/bridge\s+([\d.]+)\s+(\w+)\s+(?:from|on)\s+(\w+)\s+(?:to|for)\s+(\w+)(?:\s+(?:on|chain)\s+(\w+))?/i)
+  if (bridgeMatch) {
+    let [, amount, fromToken, fromChain, toToken, toChain] = bridgeMatch
+    // Se toChain não for detectado, assume que o 4º grupo é a chain e o token é o mesmo
+    if (!toChain) {
+      toChain = toToken
+      toToken = fromToken
+    }
+    console.log(`[bridge] Detected: ${amount} ${fromToken} (${fromChain}) → ${toToken} (${toChain})`)
+
+    try {
+      // Busca snapshot para estimar preço
+      const snap = await getPortfolioSnapshot(DEFAULT_WALLET)
+      const tokenData = snap.topPositions.find(p => p.symbol === fromToken.toUpperCase())
+      const price = tokenData ? (tokenData.value / (tokenData.qty || tokenData.quantity)) : 0
+      const estimatedUsd = price * parseFloat(amount)
+
+      if (price > 0 && estimatedUsd < 0.50) {
+        await message.channel.send(`⚠️ **Bridge Blocked** — The estimated value ($${estimatedUsd.toFixed(2)}) is below the $0.50 minimum.`)
+        return
+      }
+
+      await message.channel.send(`🌉 **Executing cross-chain bridge via Zerion CLI...**\n\`${amount} ${fromToken.toUpperCase()} (${fromChain.toUpperCase()}) → ${toToken.toUpperCase()} (${toChain.toUpperCase()})\`` + (price > 0 ? `\nEstimated Value: **$${estimatedUsd.toFixed(2)}**` : ''))
+
+      const wallet = fromChain.toLowerCase() === 'solana' ? 'omnisysx-bot-sol' : 'omnisysx-bot'
+      const result = await zerionCli([
+        'bridge', fromChain.toLowerCase(), fromToken.toUpperCase(), amount,
+        toChain.toLowerCase(), toToken.toUpperCase(),
+        '--wallet', wallet,
+        '--json'
+      ])
+
+      const txHash = result.txHash || result.transaction?.hash || result.hash
+      await message.channel.send(`✅ **Bridge initiated!**\nTx Hash: \`${txHash || 'pending'}\``)
+    } catch (e) {
+      console.error(`[bridge] FAILED:`, e.message)
+      await message.channel.send(`❌ **Bridge failed:** ${e.message}`)
+    }
+    return
+  }
+
+  // ── REGULAR ORCHESTRATOR CHAT ──
   const walletMatch = question.match(/0x[a-fA-F0-9]{40}/)
   const walletAddr = walletMatch ? walletMatch[0] : DEFAULT_WALLET
 
-  // Build wallet context
   let walletContext = ''
   if (walletAddr) {
     try {
@@ -521,7 +800,7 @@ client.on(Events.MessageCreate, async (message) => {
       const positions = snap.topPositions
         .map(p => `${p.symbol} on ${p.chain}: $${(p.value || 0).toFixed(2)}`)
         .join(', ')
-      walletContext = `\n\n[WALLET CONTEXT]\nAddress: ${walletAddr}\nTotal Value: $${snap.totalUsd.toFixed(2)}\nETH Balance: ${snap.ethBalance.toFixed(6)} ETH\nGas Status: ${snap.gasStatus}\n24h Change: ${(snap.change24h * 100).toFixed(2)}%\nTop Positions: ${positions}\n[END WALLET CONTEXT]`
+      walletContext = `\n\n[WALLET CONTEXT]\nAddress: ${walletAddr}\nTotal Value: $${snap.totalUsd.toFixed(2)}\nGas Balance: ${snap.gasBalance.toFixed(6)} ${snap.gasSymbol}\nGas Status: ${snap.gasStatus}\n24h Change: ${(snap.change24h * 100).toFixed(2)}%\nTop Positions: ${positions}\n[END WALLET CONTEXT]`
       console.log('[mention] Wallet context loaded')
     } catch (e) {
       console.log(`[mention] Wallet context failed: ${e.message}`)
@@ -563,7 +842,6 @@ client.on(Events.MessageCreate, async (message) => {
     const answer = data.choices?.[0]?.message?.content || 'No response generated.'
     const truncated = answer.length > 1900 ? answer.slice(0, 1900) + '…' : answer
 
-    // Try embed first, fallback to plain text if missing Embed Links permission
     try {
       const embed = new EmbedBuilder()
         .setColor(COLORS.purple)
@@ -574,7 +852,6 @@ client.on(Events.MessageCreate, async (message) => {
       await message.channel.send({ embeds: [embed] })
       console.log('[mention] Embed sent ✓')
     } catch {
-      // Fallback: send as plain text
       await message.channel.send(`🧠 **Orchestrator**\n\n${truncated}`)
       console.log('[mention] Sent as plain text (embed permission missing)')
     }
@@ -747,6 +1024,84 @@ const commandHandlers = {
     if (summary.txHash) embed.addFields({ name: 'Tx', value: `\`${summary.txHash.slice(0, 20)}…\``, inline: false })
     await i.reply({ embeds: [embed] })
   },
+
+  async bridge(i) {
+    await i.deferReply()
+    const amount = i.options.getString('amount')
+    const fromChain = i.options.getString('from_chain').toLowerCase()
+    const toChain = i.options.getString('to_chain').toLowerCase()
+    const fromToken = i.options.getString('from_token').toUpperCase()
+    const toToken = i.options.getString('to_token').toUpperCase()
+
+    try {
+      await i.editReply(`🌉 **Requesting bridge via Zerion CLI...**\n\`${amount} ${fromToken} (${fromChain}) → ${toToken} (${toChain})\``)
+
+      const cmd = [
+        'bridge', fromChain, fromToken, amount, toChain, toToken,
+        '--wallet', 'omnisysx-bot', '--json'
+      ]
+
+      const result = await zerionCli(cmd)
+      const txHash = result.txHash || result.transaction?.hash || result.hash
+
+      if (!txHash && result.error) throw new Error(result.error.message || 'Bridge failed')
+
+      const explorerMap = { base: 'https://basescan.org', eth: 'https://etherscan.io', solana: 'https://solscan.io' }
+      const explorer = explorerMap[fromChain] || ''
+
+      const embed = new EmbedBuilder()
+        .setColor(COLORS.blue)
+        .setTitle('✅ Bridge Initiated')
+        .setDescription(`**${amount} ${fromToken}** is being moved from **${fromChain.toUpperCase()}** to **${toChain.toUpperCase()}**.`)
+        .addFields(
+          { name: '🔗 Transaction', value: txHash ? (explorer ? `[${txHash.slice(0, 16)}…](${explorer}/tx/${txHash})` : `\`${txHash}\``) : 'Pending...', inline: false },
+          { name: '🎯 Destination', value: `${toToken} on ${toChain.toUpperCase()}`, inline: true },
+        )
+        .setFooter({ text: 'OmnisysX · Zerion CLI Bridge' })
+        .setTimestamp()
+
+      await i.editReply({ embeds: [embed] })
+    } catch (e) {
+      console.error('[bridge] FAILED:', e.message)
+      await i.editReply(`❌ **Bridge failed:** ${e.message}`)
+    }
+  },
+
+  async swap(i) {
+    await i.deferReply()
+    const chain  = i.options.getString('chain').toLowerCase()
+    const amount = i.options.getString('amount')
+    const from   = i.options.getString('from').toUpperCase()
+    const to     = i.options.getString('to').toUpperCase()
+
+    try {
+      await i.editReply(`⚡ **Executing swap via Zerion CLI...**\n\`${amount} ${from} → ${to} on ${chain.toUpperCase()}\``)
+      
+      const wallet = chain === 'solana' ? 'omnisysx-bot-sol' : 'omnisysx-bot'
+      const result = await zerionCli(['swap', chain, amount, from, to, '--wallet', wallet, '--json'])
+      const txHash = result.txHash || result.transaction?.hash || result.hash
+
+      if (!txHash && result.error) throw new Error(result.error.message || 'Swap failed')
+
+      const explorerMap = { base: 'https://basescan.org', eth: 'https://etherscan.io', solana: 'https://solscan.io' }
+      const explorer = explorerMap[chain] || ''
+
+      const embed = new EmbedBuilder()
+        .setColor(COLORS.green)
+        .setTitle('✅ Swap Executed')
+        .setDescription(`Successfully swapped **${amount} ${from}** for **${to}** on **${chain.toUpperCase()}**.`)
+        .addFields(
+          { name: '🔗 Transaction', value: txHash ? (explorer ? `[${txHash.slice(0, 16)}…](${explorer}/tx/${txHash})` : `\`${txHash}\``) : 'Pending...', inline: false },
+        )
+        .setFooter({ text: 'OmnisysX · Zerion CLI Swap' })
+        .setTimestamp()
+
+      await i.editReply({ embeds: [embed] })
+    } catch (e) {
+      console.error('[swap] FAILED:', e.message)
+      await i.editReply(`❌ **Swap failed:** ${e.message}`)
+    }
+  },
 }
 
 // ============================================================
@@ -807,8 +1162,11 @@ async function maybeAlertGas(channel, state, name, snap) {
 // ============================================================
 
 ;(async () => {
+  await initAgentWallet()
   await registerCommands()
   await client.login(DISCORD_TOKEN)
+  console.log(`[discord] Connected and polling started...`)
+  if (ALERT_CHANNEL_ID) startPollingLoop()
 })()
 
 process.on('SIGINT', () => {

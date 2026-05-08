@@ -1,9 +1,9 @@
 /**
- * OmnisysX — Multi-Agent DeFi Pipeline
+ * OmnisysX v1.0.2 — Multi-Agent DeFi Pipeline
  * ----------------------------------------------------------
  * A production-grade autonomous DeFi pipeline that observes
  * wallets, reasons about risk, and executes onchain swaps —
- * built on top of the Zerion CLI fork and OpenRouter LLM gateway.
+ * built on top of the Zerion CLI and Anthropic's Haiku model.
  *
  * Pipeline (the "V Pattern"):
  *
@@ -83,9 +83,11 @@ async function runObserver(address) {
 
   const totalUsd  = portData.data?.attributes?.total?.positions || positions.reduce((s, p) => s + p.value, 0)
   const change24h = portData.data?.attributes?.changes?.percent_1d || 0
-  const ethPos    = findEth(positions)
-  const ethBal    = ethPos?.quantity ?? 0
-  const gasStatus = computeGasStatus(ethBal)
+  
+  const gasAsset  = findGasAsset(positions, address)
+  const gasBal    = gasAsset?.quantity ?? 0
+  const gasSymbol = gasAsset?.symbol || 'ETH'
+  const gasStatus = computeGasStatus(gasBal, gasSymbol)
 
   const topPositions = positions
     .sort((a, b) => b.value - a.value)
@@ -94,26 +96,41 @@ async function runObserver(address) {
 
   const report = {
     address, totalUsd, change24h,
-    ethBalance: ethBal, gasStatus,
+    gasBalance: gasBal, gasSymbol, gasStatus,
     topPositions, timestamp: new Date().toISOString(),
   }
 
-  log.ok(`portfolio: $${totalUsd.toFixed(2)} · ETH=${ethBal.toFixed(6)} (${gasStatus})`)
+  log.ok(`portfolio: $${totalUsd.toFixed(2)} · ${gasSymbol}=${gasBal.toFixed(6)} (${gasStatus})`)
   return report
 }
 
-function findEth(positions) {
-  return positions.find(p => p.symbol === 'ETH' && (p.chain === 'ethereum' || p.chain === 'base'))
+function findGasAsset(positions, address) {
+  // Se o endereço for Solana (comprimento > 42 caracteres ou sem 0x), prioriza SOL
+  const isSolana = address.length > 42 || !address.startsWith('0x')
+  
+  if (isSolana) {
+    const sol = positions.find(p => p.symbol === 'SOL' && p.chain === 'solana')
+    if (sol) return sol
+  }
+  
+  // Tenta achar ETH (Base ou Ethereum)
+  const eth = positions.find(p => p.symbol === 'ETH' && (p.chain === 'ethereum' || p.chain === 'base'))
+  if (eth) return eth
+
+  // Fallback para SOL se não achou ETH mas tem SOL
+  return positions.find(p => p.symbol === 'SOL' && p.chain === 'solana')
 }
 
-function computeGasStatus(eth) {
-  if (eth < MIN_ETH_GAS)     return 'CRITICAL'
-  if (eth < MIN_ETH_GAS * 2) return 'WARNING'
+function computeGasStatus(balance, symbol) {
+  const min = symbol === 'SOL' ? 0.01 : MIN_ETH_GAS
+  if (balance < min)     return 'CRITICAL'
+  if (balance < min * 2) return 'WARNING'
   return 'SAFE'
 }
 
 // ============================================================
 // STAGES 2 + 3 — TASK MANAGER (REASON + PLAN)
+// LLM decides whether to act and produces a Transaction Intent.
 // ============================================================
 
 const TASK_MANAGER_PROMPT = `You are the Task Manager of OmnisysX, a DeFi agent.
@@ -131,7 +148,7 @@ JSON shape:
   "intentType": "SWAP" | "ALERT_ONLY",
   "rationale": "short string explaining the decision",
   "action": {
-    "chain": "base" | "ethereum" | "arbitrum" | "polygon" | "optimism",
+    "chain": "base" | "ethereum" | "arbitrum" | "polygon" | "optimism" | "solana",
     "fromToken": "symbol",
     "toToken": "symbol",
     "amount": "string with number",
@@ -162,6 +179,8 @@ async function runTaskManager(report) {
 
 // ============================================================
 // STAGE 4 — AUDITOR (AUTHORIZE)
+// Independent security check. The pipeline halts here unless
+// the auditor signs off (APPROVED). Acts as the policy gate.
 // ============================================================
 
 const AUDITOR_PROMPT = `You are the Auditor of OmnisysX — the security gate of the pipeline.
@@ -189,7 +208,7 @@ async function runAuditor(tis, report) {
   }
 
   const text = await askClaude(AUDITOR_PROMPT,
-    `TIS:\n${JSON.stringify(tis, null, 2)}\n\nETH balance: ${report.ethBalance}\nPortfolio: $${report.totalUsd}\n\nEvaluate.`,
+    `TIS:\n${JSON.stringify(tis, null, 2)}\n\nGas balance: ${report.gasBalance} ${report.gasSymbol}\nPortfolio: $${report.totalUsd}\n\nEvaluate.`,
     { maxTokens: 400 })
 
   const pdr = extractJson(text)
@@ -200,7 +219,8 @@ async function runAuditor(tis, report) {
 }
 
 // ============================================================
-// STAGE 5 — EXECUTOR (via Zerion CLI)
+// STAGE 5 — EXECUTOR
+// Executes the swap via Zerion CLI using the agent token.
 // ============================================================
 
 async function runExecutor(tis) {
@@ -224,22 +244,24 @@ async function runExecutor(tis) {
 function buildZerionCommand(tis) {
   const { intentType, action } = tis
   const cmd = []
+  const wallet = action.chain === 'solana' ? 'omnisysx-bot-sol' : AGENT_WALLET_NAME
 
   switch (intentType) {
     case 'SWAP':
-      cmd.push('swap', action.fromToken, action.toToken, String(action.amount))
-      cmd.push('--chain', action.chain)
-      cmd.push('--wallet', AGENT_WALLET_NAME)
+      cmd.push('swap', action.chain, String(action.amount), action.fromToken, action.toToken)
+      cmd.push('--wallet', wallet)
       if (action.slippageBps) cmd.push('--slippage', String(action.slippageBps / 100))
       break
     case 'BRIDGE':
-      cmd.push('bridge', action.fromToken, action.chain, String(action.amount))
-      cmd.push('--to-token', action.toToken)
-      cmd.push('--wallet', AGENT_WALLET_NAME)
+      // A bridge exige o formato: bridge <from-chain> <from-token> <amount> <to-chain> <to-token>
+      cmd.push('bridge', action.chain, action.fromToken, String(action.amount))
+      if (action.toChain) cmd.push(action.toChain)
+      if (action.toToken) cmd.push(action.toToken)
+      cmd.push('--wallet', wallet)
       break
     case 'SEND':
       cmd.push('send', action.fromToken, String(action.amount))
-      cmd.push('--to', action.to, '--chain', action.chain, '--wallet', AGENT_WALLET_NAME)
+      cmd.push('--to', action.to, '--chain', action.chain, '--wallet', wallet)
       break
     default:
       throw new Error(`Unknown intentType: ${intentType}`)
@@ -250,6 +272,7 @@ function buildZerionCommand(tis) {
 
 // ============================================================
 // STAGE 6 — VERIFY
+// Re-fetches portfolio after execution and reports the delta.
 // ============================================================
 
 async function runVerify(execResult, beforeReport) {
@@ -260,7 +283,7 @@ async function runVerify(execResult, beforeReport) {
     return { ok: true }
   }
 
-  await sleep(8000)
+  await sleep(8000) // wait for Zerion to index
 
   const after = await runObserver(beforeReport.address)
   const deltaUsd = after.totalUsd - beforeReport.totalUsd
@@ -289,7 +312,37 @@ async function zerionGet(path) {
 // Zerion CLI — used for executing swaps, policies, and wallet ops
 export async function zerionCli(args) {
   try {
-    const { stdout } = await exec('zerion', args, { env: process.env, maxBuffer: 10 * 1024 * 1024 })
+    const finalArgs = [...args]
+    
+    // Decide qual token usar com base na wallet pedida
+    let agentToken = process.env.ZERION_AGENT_TOKEN
+    const walletIdx = finalArgs.indexOf('--wallet')
+    if (walletIdx !== -1) {
+      const walletName = finalArgs[walletIdx + 1]
+      if (walletName === 'omnisysx-bot-sol') {
+        agentToken = process.env.ZERION_AGENT_TOKEN_SOL || agentToken
+      }
+    }
+
+    if (agentToken) {
+      finalArgs.push('--agent-token', agentToken)
+    }
+
+    const env = { 
+      ...process.env, 
+      ZERION_API_KEY: process.env.ZERION_API_KEY || ''
+    }
+
+    // DEBUG LOGS (Always visible for now)
+    const t = env.ZERION_AGENT_TOKEN || ''
+    console.log(`[debug] Zerion Call: wallet=${finalArgs[finalArgs.indexOf('--wallet') + 1]} | token_len=${t.length} | token_start=${t.slice(0,10)}...`)
+
+    const passphrase = process.env.ZERION_PASSPHRASE || ''
+    const cmdStr = passphrase 
+      ? `echo "${passphrase}" | zerion ${finalArgs.join(' ')}` 
+      : `zerion ${finalArgs.join(' ')}`
+
+    const { stdout } = await exec(cmdStr, { env, maxBuffer: 10 * 1024 * 1024, shell: true })
     try { return JSON.parse(stdout) } catch { return { raw: stdout } }
   } catch (e) {
     throw new Error(`zerion ${args[0]} failed: ${e.stderr || e.message}`)
@@ -374,13 +427,21 @@ export async function runPipeline(address = TARGET_ADDRESS) {
 
 // Direct swap execution (used by bot @mention commands)
 export async function executeSwap({ fromToken, toToken, amount, chain }) {
-  const cmd = ['swap', fromToken, toToken, String(amount),
-               '--chain', chain, '--wallet', AGENT_WALLET_NAME, '--json']
+  // Determine wallet based on chain
+  const wallet = chain.toLowerCase() === 'solana' ? 'omnisysx-bot-sol' : AGENT_WALLET_NAME
+  
+  // NPM version order: zerion swap <chain> <amount> <from-token> <to-token>
+  const cmd = ['swap', chain.toLowerCase(), String(amount), fromToken, toToken, '--wallet', wallet, '--json']
   log.stage('SWAP', `${amount} ${fromToken} → ${toToken} on ${chain}`)
-  const result = await zerionCli(cmd)
-  const txHash = result.txHash || result.transaction?.hash || result.hash
-  log.ok(`tx: ${txHash || 'pending'}`)
-  return { txHash, raw: result }
+  
+  try {
+    const result = await zerionCli(cmd)
+    const txHash = result.txHash || result.transaction?.hash || result.hash
+    log.ok(`tx: ${txHash || 'pending'}`)
+    return { txHash, raw: result }
+  } catch (e) {
+    throw e
+  }
 }
 
 // Run if invoked directly (not imported)

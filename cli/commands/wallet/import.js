@@ -28,19 +28,24 @@ export default async function walletImport(args, flags) {
   }
 
   try {
-    process.stderr.write("A passphrase is required to encrypt your wallet.\n\n");
-    const passphrase = await readPassphrase({ confirm: true });
-    process.stderr.write(PASSPHRASE_WARNING);
+    let passphrase;
+    if (flags["passphrase"]) {
+      passphrase = flags["passphrase"];
+    } else {
+      process.stderr.write("A passphrase is required to encrypt your wallet.\n\n");
+      passphrase = await readPassphrase({ confirm: true });
+      process.stderr.write(PASSPHRASE_WARNING);
+    }
 
     let wallet;
     let origin;
 
     if (hasEvmKey) {
-      const key = await readSecret("Enter EVM private key (hex): ");
+      const key = flags["key-value"] || await readSecret("Enter EVM private key (hex): ");
       wallet = ows.importFromKey(name, key, passphrase, "evm");
       origin = WALLET_ORIGIN.EVM_KEY;
     } else if (hasSolKey) {
-      const key = await readSecret("Enter Solana private key (base58, hex, or byte array): ");
+      const key = flags["key-value"] || await readSecret("Enter Solana private key (base58, hex, or byte array): ");
       wallet = ows.importFromKey(name, key, passphrase, "solana");
       origin = WALLET_ORIGIN.SOL_KEY;
     } else {
