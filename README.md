@@ -4,6 +4,8 @@
 
 ### Multi-Agent DeFi Pipeline · Built on Zerion CLI
 
+<img src="assets/landing.png" alt="OmnisysX Banner" width="100%" />
+
 **Browse onchain. Act autonomously.**
 
 A production-grade autonomous agent that observes DeFi wallets, reasons about risk with Claude, and executes onchain transactions through Zerion — all with bounded, auditable powers.
@@ -65,6 +67,17 @@ This is the same pattern professional trading desks use: research, strategy, and
 - 🤖 **Discord bot** — slash commands, @mention chat, auto alerts, Trinity Verification Report
 - 🔌 **x402 ready** — pay-per-call mode for autonomous wallets that pay for their own data
 - 🍴 **Forkable** — MIT license, modular code, swap any component
+
+---
+
+## 🛠️ Implementation Milestones (Completed)
+
+We have pushed the boundaries of what is possible with the current Zerion CLI:
+
+*   **CLI Core Monkey-Patch:** Solved the critical "to parameter is required" bug that blocked autonomous swaps in the official CLI.
+*   **Dual-Token Agent Support:** Fully implemented EVM and Solana agent token handling in a single pipeline.
+*   **Secure Passphrase Injection:** Implemented automated `ZERION_PASSPHRASE` piping to allow encrypted keystores to function in cloud environments like Railway.
+*   **Railway-Ready Deployment:** Full Docker support with dynamic configuration bundle restoration.
 
 ---
 
@@ -162,56 +175,16 @@ Open `.env` and fill in:
 npm run agent
 ```
 
-Expected output:
-
-```
-═══ OmnisysX Pipeline ═══
-Wallet: 0xd8dA…6045
-Model:  claude-haiku-4-5-20251001
-Mode:   DRY_RUN
-
-[OBSERVE  ] analyzing 0xd8dA…6045
-  ✓ portfolio: $12.40 · ETH=0.004212 (SAFE)
-[PLAN     ] TaskManager reasoning...
-  ✓ TIS: SWAP (confidence=0.78)
-    Portfolio has idle USDC; convert a small amount to ETH for gas reserve
-[AUTHORIZE] Auditor reviewing...
-    ✓ APPROVED (risk=15/100) — Within gas and slippage limits
-[EXECUTE  ] executing SWAP...
-  ⚠ DRY_RUN active — would execute:
-    zerion swap usdc eth 1 --chain base --wallet omnisysx-bot --slippage 1 --json
-[VERIFY   ] verifying onchain state...
-    dry-run — skipping onchain verification
-
-═══ Pipeline OK · 4.2s ═══
-```
-
-### 5. Go live
-
-When you're ready, set `EXECUTOR_DRY_RUN=false` in `.env` and run again. The Executor will sign and broadcast the swap. The transaction hash will appear in the verify stage.
-
 ---
 
 ## 🤖 The Discord bot
 
 Public bot anyone can add to their server. It exposes the pipeline through slash commands, an AI-powered Web3 assistant (Orchestrator), and automatic gas-reserve alerts.
 
-### Setup
-
-```bash
-cd bot
-npm install
-cp ../.env.example .env  # fill in all required keys
-npm start
-```
-
-Get your Discord credentials at [discord.com/developers/applications](https://discord.com/developers/applications):
-
-1. Create a new Application
-2. Go to **Bot** tab → **Reset Token** → copy
-3. Go to **Bot** tab → Enable **Message Content Intent** (required for @mentions)
-4. Go to **OAuth2** → **General** → copy the **Application ID**
-5. Generate an invite URL via **OAuth2** → **URL Generator** with scopes `bot` + `applications.commands` and permissions `Send Messages`, `Embed Links`, `Read Message History`, `Use Slash Commands`
+<div align="center">
+  <img src="assets/trinity.png" alt="Trinity Verification Report" width="600px" />
+  <p><i>The Trinity Verification Report: AI transparency in action.</i></p>
+</div>
 
 ### Commands
 
@@ -227,55 +200,6 @@ Get your Discord credentials at [discord.com/developers/applications](https://di
 | `/status` | Show last pipeline execution |
 | `/help` | Show all commands |
 
-### @Mention chat
-
-Mention the bot to chat with the Orchestrator AI:
-
-```
-@OmnisysX what is Aave?
-@OmnisysX analyze 0x75029d830749554d2dccc5e00dda7eb7c294c423
-```
-
-The Orchestrator is scope-locked to Web3 topics and automatically injects wallet portfolio data when an address is detected. It will never reveal API keys or internal configuration.
-
-### Auto alerts
-
-Set `ALERT_CHANNEL_ID` in `.env` to a Discord channel ID and the bot will post critical alerts there (currently: gas reserve breach, with 1-hour cooldown).
-
-See [bot/README.md](bot/README.md) for detailed setup and hosting instructions.
-
----
-
-## 🌐 The web dashboard
-
-A single-file React app that runs entirely in the browser. No build step, no Node.js required to host it.
-
-```bash
-cd web
-# just open OmnisysX.html in any browser
-# or serve with any static host (Vercel, Netlify, GitHub Pages, etc.)
-```
-
-The dashboard reads pipeline state from `bot-state.json` if you co-deploy with the bot, or shows mock data for demos.
-
-To deploy on a custom domain, drag-drop the `web/` folder onto Vercel or Netlify.
-
----
-
-## Cost breakdown
-
-Running the pipeline every 5 minutes (288 runs/day):
-
-| Item | Per day | Per month |
-|------|---------|-----------|
-| Anthropic Haiku 4.5 (Task Manager + Auditor) | ~$0.20 | ~$6 |
-| Zerion API (free tier) | $0 | $0 |
-| Discord bot hosting (Railway / VPS) | — | ~$5 |
-| Onchain gas (per swap on Base) | ~$0.01–0.10 | varies |
-| **Fixed total** | **~$0.20** | **~$11** |
-
-To go cheaper: increase the polling interval. Most autonomous DeFi strategies don't need 5-minute granularity.
-
 ---
 
 ## Security model
@@ -285,15 +209,8 @@ OmnisysX is built on **defense in depth**. There are four independent guards aga
 ### 1. The Golden Rule
 > The agent must never reduce ETH balance below `MIN_ETH_GAS_RESERVE`.
 
-Enforced at every layer: Observer alerts, Task Manager prompt, Auditor check, Executor pre-flight.
-
 ### 2. Auditor as policy gate
-The Auditor agent runs in a separate LLM call with adversarial framing. Its job is to find reasons to reject. It blocks:
-
-- Slippage > 500 bps
-- Confidence < 0.5
-- Unsupported chains
-- Any move that violates the Golden Rule
+The Auditor agent runs in a separate LLM call with adversarial framing. Its job is to find reasons to reject.
 
 ### 3. Zerion agent token policy
 Even if the entire LLM stack misbehaves, the **agent token** has hard limits set by the Zerion CLI:
@@ -302,51 +219,18 @@ Even if the entire LLM stack misbehaves, the **agent token** has hard limits set
 - `--deny-transfers` → cannot send funds out
 - `--expires 7d` → token self-destructs in a week
 
-This is the most important boundary: the LLM cannot exceed what the policy allows, period.
-
-### 4. DRY_RUN by default
-The Executor refuses to broadcast unless `EXECUTOR_DRY_RUN=false` is explicitly set. Forks and demo deployments stay safe by default.
-
 ---
 
-## Forking & customization
-
-OmnisysX is intentionally modular. Common modifications:
-
-| You want to... | What to change |
-|----------------|----------------|
-| Use a different LLM | `agent/agent.mjs` → swap the `askClaude()` function for OpenAI/Gemini SDK |
-| Change the strategy | Edit `TASK_MANAGER_PROMPT` in `agent/agent.mjs` |
-| Add new policies | Edit `AUDITOR_PROMPT` in `agent/agent.mjs` and the `zerion agent create-policy` invocation |
-| Support more chains | Adjust the `--chains` flag on the policy + the chain enum in the Task Manager prompt |
-| Add a Telegram bot instead of Discord | Copy `bot/bot.mjs` structure, swap discord.js for the Telegram SDK |
-| Replace Zerion with another data source | Replace `zerionCli()` calls in `agent/agent.mjs` |
-
-The pipeline contract (`runPipeline()` returning a `{ report, tis, pdr, execResult }` object) is stable — that's the integration point any UI plugs into.
-
----
-
-## Roadmap
+## 🛤️ Roadmap (What's Next)
 
 - [x] Three-agent pipeline (Observer / Task Manager / Auditor)
-- [x] Zerion HTTP REST API integration (replaced CLI dependency)
-- [x] Web dashboard with documentation
-- [x] Discord bot with slash commands + auto alerts
-- [x] Orchestrator AI — `/ask` + `@mention` chat with security guardrails
-- [x] Trinity Verification Report for `/run` output
-- [x] Railway deployment with Docker (Node 22)
-- [ ] Telegram bot (community contribution welcome)
-- [ ] Multi-chain orchestration (currently single-chain per run)
-- [ ] Backtesting harness — replay past wallet states
-- [ ] Webhook support for custom integrations
-
----
-
-## Contributing
-
-Contributions are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md).
-
-For a fork-friendly project, the architecture is intentionally minimal: every component is a single file, no monorepo tooling, no TypeScript-only abstractions. If you're stuck, open an issue.
+- [x] Zerion CLI Patch for `to` parameter (On-chain Success)
+- [x] Railway/Cloud deployment support
+- [x] Trinity Verification Report for Discord
+- [ ] **Full Web Dashboard Integration:** Porting the Discord's robust execution engine directly to the web UI, allowing real-time swaps via the browser with the same security pipeline.
+- [ ] Cross-chain bridge automation.
+- [ ] Telegram bot integration.
+- [ ] Backtesting harness.
 
 ---
 
@@ -354,9 +238,6 @@ For a fork-friendly project, the architecture is intentionally minimal: every co
 
 - **[Zerion](https://zerion.io)** — for the CLI, the API, and the agent token primitives
 - **[Anthropic](https://anthropic.com)** — for Claude (3.5 Haiku powers the agents via OpenRouter)
-- **[OpenRouter](https://openrouter.ai)** — for LLM gateway and model routing
-- **[Coinbase](https://www.coinbase.com/developer-platform)** — for the x402 protocol on Base
-
 
 ---
 
