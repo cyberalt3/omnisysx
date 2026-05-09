@@ -92,13 +92,14 @@ For the **Executor** stage, we rely on the **Zerion CLI**. This is the core of o
 
 ```
 omnisysx/
-├── agent/              # Multi-agent pipeline (~370 LOC, single file)
+├── agent/              # Multi-agent pipeline (v1.0.2)
 │   ├── agent.mjs       #   Observer → TaskManager → Auditor → Executor → Verify
+│   ├── server.mjs      #   SSE API Server for web dashboard
 │   └── package.json
 │
-├── bot/                # Discord bot (~795 LOC, single file)
-│   ├── bot.mjs         #   Slash commands + Orchestrator AI + @mention chat
-│   ├── README.md       #   Bot-specific setup and usage
+├── bot/                # Discord bot (v1.1.0 - Production)
+│   ├── bot.mjs         #   1245 LOC: Slash commands + Orchestrator + Multi-wallet
+│   ├── README.md       #   Bot-specific setup
 │   └── package.json
 │
 ├── web/                # Static web dashboard (no build step)
@@ -110,7 +111,7 @@ omnisysx/
 ├── docs/               # Project documentation (Markdown)
 ├── scripts/            # Utility scripts (sanity checks, etc.)
 ├── .env.example        # Environment variable template
-93: └── README.md           # This file
+└── README.md           # This file
 ```
 
 The `agent/` is the source of truth for the pipeline logic. The `bot/` and `web/` import from it — they're thin UIs over the same core.
