@@ -62,7 +62,7 @@ function die(msg) {
 // Reads onchain wallet state via the Zerion HTTP API.
 // ============================================================
 
-async function runObserver(address) {
+export async function runObserver(address) {
   log.stage('OBSERVE', `analyzing ${shortAddr(address)}`)
 
   const [posData, portData] = await Promise.all([
@@ -102,6 +102,44 @@ async function runObserver(address) {
 
   log.ok(`portfolio: $${totalUsd.toFixed(2)} · ${gasSymbol}=${gasBal.toFixed(6)} (${gasStatus})`)
   return report
+}
+
+export async function runMultiObserver(addresses) {
+  log.stage('OBSERVE', `multi-scan: ${addresses.length} wallets`)
+  const reports = await Promise.all(addresses.map(addr => runObserver(addr)));
+  
+  const totalUsd = reports.reduce((sum, r) => sum + r.totalUsd, 0);
+  const wallets = reports.map(r => ({
+    address: r.address,
+    totalUsd: r.totalUsd,
+    topPositions: r.topPositions,
+    gasStatus: r.gasStatus
+  }));
+
+  const globalReport = {
+    type: 'MULTI_WALLET_SNAPSHOT',
+    totalUsd,
+    walletCount: addresses.length,
+    wallets,
+    timestamp: new Date().toISOString(),
+  };
+
+  log.ok(`multi-portfolio total: $${totalUsd.toFixed(2)}`);
+  return globalReport;
+}
+
+export async function runTransactionAnalysis(address) {
+  log.stage('HISTORY', `analyzing transactions for ${shortAddr(address)}`)
+  const history = await zerionCli(['history', address, '--json'])
+  const txs = (history.data || history || []).slice(0, 15)
+
+  const prompt = `Analyze these recent transactions and explain the profit strategy.
+Identify alpha moves, yield farming, or successful trades. Use a sharp, expert tone.
+Data: ${JSON.stringify(txs, null, 2)}`
+
+  const analysis = await askClaude("You are the OmnisysX Alpha Strategist.", prompt, { maxTokens: 800 })
+  log.ok(`Analysis complete for ${shortAddr(address)}`)
+  return analysis
 }
 
 function findGasAsset(positions, address) {
@@ -159,7 +197,7 @@ JSON shape:
 
 For ALERT_ONLY, "action" can be null.`
 
-async function runTaskManager(report) {
+export async function runTaskManager(report) {
   log.stage('PLAN', 'TaskManager reasoning...')
 
   if (report.gasStatus === 'CRITICAL') {
@@ -200,7 +238,7 @@ Otherwise, decision="APPROVED".
 Reply with ONLY this JSON:
 { "decision": "APPROVED|REJECTED|NEEDS_REVIEW", "riskScore": 0-100, "notes": "short explanation" }`
 
-async function runAuditor(tis, report) {
+export async function runAuditor(tis, report) {
   log.stage('AUTHORIZE', 'Auditor reviewing...')
 
   if (tis.intentType === 'ALERT_ONLY') {
@@ -223,7 +261,7 @@ async function runAuditor(tis, report) {
 // Executes the swap via Zerion CLI using the agent token.
 // ============================================================
 
-async function runExecutor(tis) {
+export async function runExecutor(tis) {
   log.stage('EXECUTE', `executing ${tis.intentType}...`)
 
   const cmd = buildZerionCommand(tis)
@@ -339,8 +377,8 @@ export async function zerionCli(args) {
 
     const passphrase = process.env.ZERION_PASSPHRASE || ''
     const cmdStr = passphrase 
-      ? `echo "${passphrase}" | zerion ${finalArgs.join(' ')}` 
-      : `zerion ${finalArgs.join(' ')}`
+      ? `echo "${passphrase}" | npx zerion ${finalArgs.join(' ')}` 
+      : `npx zerion ${finalArgs.join(' ')}`
 
     const { stdout } = await exec(cmdStr, { env, maxBuffer: 10 * 1024 * 1024, shell: true })
     try { return JSON.parse(stdout) } catch { return { raw: stdout } }

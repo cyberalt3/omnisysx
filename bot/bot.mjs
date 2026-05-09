@@ -619,6 +619,8 @@ const commandDefs = [
     .addStringOption(o => o.setName('amount').setDescription('Amount to swap (e.g. 0.001)').setRequired(true))
     .addStringOption(o => o.setName('from').setDescription('Token to sell (e.g. ETH)').setRequired(true))
     .addStringOption(o => o.setName('to').setDescription('Token to buy (e.g. USDC)').setRequired(true)),
+  new SlashCommandBuilder().setName('tx').setDescription('Analyze last 7 days of transactions to identify profit strategies')
+    .addStringOption(o => o.setName('address').setDescription('Wallet address').setRequired(false)),
 ].map(c => c.toJSON())
 
 async function registerCommands() {
@@ -1100,6 +1102,68 @@ const commandHandlers = {
     } catch (e) {
       console.error('[swap] FAILED:', e.message)
       await i.editReply(`❌ **Swap failed:** ${e.message}`)
+    }
+  },
+  
+  async tx(i) {
+    await i.deferReply()
+    const address = i.options.getString('address') || DEFAULT_WALLET
+    
+    try {
+      await i.editReply(`🔍 **Fetching history from Zerion CLI...**\nAnalyzing \`${shortAddr(address)}\``)
+      
+      const history = await zerionCli(['history', address, '--json'])
+      const txsArray = Array.isArray(history.data) ? history.data : (Array.isArray(history) ? history : [])
+      const txs = txsArray.slice(0, 15) 
+
+      if (txs.length === 0 && history.message) {
+        throw new Error(`Zerion API: ${history.message}`)
+      }
+
+      const analysisPrompt = `You are the OmnisysX Profit Analyst. Analyze these recent transactions from the last 7 days.
+Identify profitable moves (buy low/sell high, yield farming rewards, successful arb, etc.).
+Explain the wallet's "Alpha" strategy. Use emojis and a sharp, expert tone.
+
+Transactions Data:
+${JSON.stringify(txs, null, 2)}
+
+Reply in Discord Embed format (markdown).`
+
+      const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${OPENROUTER_KEY}`,
+          'HTTP-Referer': 'https://omnisysx.io',
+          'X-Title': 'OmnisysX Profit Analyst',
+        },
+        body: JSON.stringify({
+          model: MODEL,
+          max_tokens: 800,
+          temperature: 0.5,
+          messages: [
+            { role: 'system', content: analysisPrompt },
+            { role: 'user', content: `Analyze history for ${address}` },
+          ],
+        }),
+      })
+
+      if (!res.ok) throw new Error(`LLM Analysis failed: ${res.status}`)
+      
+      const data = await res.json()
+      const answer = data.choices?.[0]?.message?.content || 'No Alpha detected.'
+      
+      const embed = new EmbedBuilder()
+        .setColor(COLORS.green)
+        .setTitle(`💹 Profit Analysis: ${shortAddr(address)}`)
+        .setDescription(answer.length > 3900 ? answer.slice(0, 3900) + '...' : answer)
+        .setFooter({ text: 'OmnisysX · History Intelligence' })
+        .setTimestamp()
+
+      await i.editReply({ content: null, embeds: [embed] })
+    } catch (e) {
+      console.error('[tx] FAILED:', e.message)
+      await i.editReply(`❌ **Analysis failed:** ${e.message}`)
     }
   },
 }

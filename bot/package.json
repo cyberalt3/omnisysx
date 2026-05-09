@@ -1,6 +1,6 @@
 {
   "name": "@omnisysx/bot",
-  "version": "0.2.0",
+  "version": "0.1.0",
   "type": "module",
   "main": "bot.mjs",
   "scripts": {
@@ -8,8 +8,7 @@
     "dev":   "node --watch bot.mjs"
   },
   "dependencies": {
-    "@omnisysx/agent": "*",
-    "discord.js": "^14.16.0",
-    "dotenv": "^16.4.0"
+    "discord.js": "^14.16.3",
+    "dotenv": "^16.4.5"
   }
 }
