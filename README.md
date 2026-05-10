@@ -12,7 +12,7 @@ A production-grade autonomous agent that observes DeFi wallets, reasons about ri
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 ![Node](https://img.shields.io/badge/node-20%2B-green)
-![Status](https://img.shields.io/badge/status-hackathon%20ready-brightgreen)
+
 
 </div>
 
@@ -56,7 +56,7 @@ This is the same pattern professional trading desks use: research, strategy, and
 ## Features
 
 - 🤖 **Multi-agent pipeline** with explicit security checkpoints
-- 🌐 **Zerion & LI.FI REST APIs** — high-performance, real-time swap and bridge execution
+- 🌐 **Zerion & LI.FI REST APIs + CLI** — high-performance, real-time swap and bridge execution
 - 🛡️ **Self-Custodial Execution** — transactions signed locally via `ethers.js`, keeping your keys secure
 - 🛡️ **Policy-bounded execution** — integrated with Zerion CLI policies for manual safety checks
 - 🧠 **Orchestrator AI** — Web3 expert assistant via `/ask` or `@mention`, powered by OpenRouter
@@ -64,7 +64,6 @@ This is the same pattern professional trading desks use: research, strategy, and
 - 💸 **Cost-optimized** — Claude 3.5 Haiku keeps each pipeline run under $0.05
 - 🌐 **Web dashboard** — single-file React app, no build step, deploy anywhere
 - 🤖 **Discord bot** — slash commands, @mention chat, auto alerts, Trinity Verification Report
-- 🔌 **x402 ready** — pay-per-call mode for autonomous wallets that pay for their own data
 - 🍴 **Forkable** — MIT license, modular code, swap any component
 
 ---
@@ -73,7 +72,7 @@ This is the same pattern professional trading desks use: research, strategy, and
 
 OmnisysX implements a high-performance hybrid model, utilizing the Zerion ecosystem for two distinct purposes:
 
-### 1. Intelligence (Zerion HTTP REST API)
+### 1. Intelligence (Zerion HTTP REST API + CLI)
 For the **Observer** and **Analyzer** stages, we use the Zerion REST API. This allows the agent to:
 - Retrieve real-time, multi-chain portfolio snapshots in milliseconds.
 - Analyze transaction history to identify alpha and profit strategies.
@@ -134,7 +133,7 @@ The `agent/` is the source of truth for the pipeline logic. The `bot/` and `web/
 ### 1. Clone and install
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/omnisysx
+git clone https://github.com/cyberalt3/omnisysx
 cd omnisysx
 npm install
 ```
@@ -354,7 +353,7 @@ The pipeline contract (`runPipeline()` returning a `{ report, tis, pdr, execResu
 ## Roadmap
 
 - [x] Three-agent pipeline (Observer / Task Manager / Auditor)
-- [x] Zerion HTTP REST API integration (replaced CLI dependency)
+- [x] Zerion HTTP REST API integration + CLI
 - [x] Web dashboard with documentation
 - [x] Discord bot with slash commands + auto alerts
 - [x] Orchestrator AI — `/ask` + `@mention` chat with security guardrails
@@ -380,12 +379,9 @@ For a fork-friendly project, the architecture is intentionally minimal: every co
 - **[Zerion](https://zerion.io)** — for the CLI, the API, and the agent token primitives
 - **[Anthropic](https://anthropic.com)** — for Claude (3.5 Haiku powers the agents via OpenRouter)
 - **[OpenRouter](https://openrouter.ai)** — for LLM gateway and model routing
-- **[Coinbase](https://www.coinbase.com/developer-platform)** — for the x402 protocol on Base
-
-Built for the [Zerion AI Agent Hackathon](https://superteam.fun/earn/listing/build-a-autonomous-onchain-agent-using-zerion-cli) — Frontier Track.
 
 ---
-
+Built with ❤️ by the OmnisysX Team. Powered by Zerion
 ## License
 
 MIT — see [LICENSE](LICENSE). Fork it, ship it, change everything.
