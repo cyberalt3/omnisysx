@@ -6,6 +6,12 @@ The multi-agent pipeline at the core of OmnisysX. Single file, zero build step.
 OBSERVE → REASON → PLAN → AUTHORIZE → EXECUTE → VERIFY
 ```
 
+## Features
+
+- **On-chain Attestation**: The agent signs a verification heartbeat on-chain during every run to prove activity and data integrity.
+- **V-Pattern Pipeline**: 6-stage flow ensuring deterministic data and creative reasoning are separated.
+- **Zerion CLI Integration**: Real-time execution with policy-bounded powers.
+
 ## Run standalone
 
 ```bash
