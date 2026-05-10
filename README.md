@@ -8,7 +8,7 @@
 
 A production-grade autonomous agent that observes DeFi wallets, reasons about risk with LLM, and executes onchain transactions through Zerion — all with bounded, auditable powers.
 
-[Live demo](https://omnisysx.com) · [Documentation](https://omnisysx.com/docs.html) · [Discord bot](#-the-discord-bot)
+[Site](https://omnisysx.xyz) · [Documentation](https://omnisysx.xyz/docs) · [Discord bot](#-the-discord-bot)
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 ![Node](https://img.shields.io/badge/node-20%2B-green)
@@ -30,7 +30,7 @@ Observer  ─────  TaskManager  Auditor  Executor  Verify
 
 Each agent has one job:
 
-- **Observer** — reads multi-chain wallet state via Zerion HTTP REST API (portfolio, positions, gas, DeFi exposure)
+- **Observer** — reads multi-chain wallet state via Zerion HTTP REST API + CLI (portfolio, positions, gas, DeFi exposure)
 - **Task Manager** — decides whether to act, produces a structured Transaction Intent
 - **Auditor** — independently validates the intent against security policies; final gate before any onchain action
 - **Executor** — signs and broadcasts transactions via **Zerion & LI.FI REST APIs** using local `ethers.js` signing. This ensures high reliability and eliminates binary dependencies in ephemeral cloud environments.
