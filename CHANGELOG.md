@@ -1,5 +1,22 @@
 # Changelog
 
+## [1.0.2] (2026-05-10) - Hackathon Stability Release
+
+### Features
+* **Hybrid Architecture**: Full migration to Zerion & LI.FI REST APIs for Swaps and Bridges.
+* **Auto-Approvals**: Implemented automated ERC-20 allowance management (MaxUint256) to prevent transaction reverts.
+* **Premium Discord UI**: Redesigned bot embeds with professional status reports and explorer links.
+* **Local Signing**: Integration with `ethers.js` for secure on-chain broadcasting via REST API.
+* **Enhanced Help**: Expanded `/help` command to showcase full agent capabilities (Swap/Bridge/Analysis).
+
+### Bug Fixes
+* **Stability**: Fixed CLI authentication issues in cloud environments (Railway) by prioritizing REST API execution.
+* **Routing**: Resolved bridge routing failures by implementing direct LI.FI quote-to-transaction logic.
+* **Feedback**: Improved error reporting for low gas and failed on-chain transactions.
+
+---
+
+
 ## [1.0.0](https://github.com/zeriontech/zerion-ai/compare/v0.4.2...v1.0.0) (2026-04-27)
 
 
