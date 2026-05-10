@@ -1,6 +1,6 @@
 # Changelog
 
-## [1.0.2] (2026-05-10) - Hackathon Stability Release
+## [1.0.2] (2026-05-10) - Stability Release
 
 ### Features
 * **Hybrid Architecture**: Full migration to Zerion & LI.FI REST APIs for Swaps and Bridges.
