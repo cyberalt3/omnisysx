@@ -2,11 +2,11 @@
 
 # OmnisysX
 
-### Multi-Agent DeFi Pipeline · Built on Zerion CLI
+### Multi-Agent DeFi Pipeline · Built on Zerion CLI + API
 
 **Browse onchain. Act autonomously.**
 
-A production-grade autonomous agent that observes DeFi wallets, reasons about risk with Claude, and executes onchain transactions through Zerion — all with bounded, auditable powers.
+A production-grade autonomous agent that observes DeFi wallets, reasons about risk with LLM, and executes onchain transactions through Zerion — all with bounded, auditable powers.
 
 [Live demo](https://omnisysx.com) · [Documentation](https://omnisysx.com/docs.html) · [Discord bot](#-the-discord-bot)
 
@@ -243,6 +243,9 @@ Get your Discord credentials at [discord.com/developers/applications](https://di
 |---------|--------------|
 | `/portfolio [address]` | Wallet snapshot embed |
 | `/run [address]` | Full pipeline → Trinity Verification Report |
+| `/swap <chain> <amount> <from> <to>` |Execute instant swap via Zerion REST API + CLI
+| `/bridge <amount> <f_chain> <t_chain> <f_token> <t_token>` | Cross-chain bridge via LI.FI with bests routes
+| `/tx <address>` | Analyze wallet for profit & alpha strategies - *(Being deployed)*
 | `/ask <question> [wallet]` | Ask the Orchestrator about Web3/DeFi |
 | `/policy` | Show the active agent token policy |
 | `/watch <address> <name>` | Add a wallet to the watchlist |
@@ -381,7 +384,9 @@ For a fork-friendly project, the architecture is intentionally minimal: every co
 - **[OpenRouter](https://openrouter.ai)** — for LLM gateway and model routing
 
 ---
-Built with ❤️ by the OmnisysX Team. Powered by Zerion
-## License
 
 MIT — see [LICENSE](LICENSE). Fork it, ship it, change everything.
+
+---
+
+Built with ❤️ by the OmnisysX Team. Powered by Zerion
