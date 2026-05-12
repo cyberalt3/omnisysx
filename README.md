@@ -8,7 +8,7 @@
 
 A production-grade autonomous agent that observes DeFi wallets, reasons about risk with LLM, and executes onchain transactions through Zerion — all with bounded, auditable powers.
 
-[Site](https://omnisysx.xyz) · [Documentation](https://omnisysx.xyz/docs) · [Discord bot](#-the-discord-bot)
+[Site](https://omnisysx.xyz) · [Documentation](https://omnisysx.xyz/docs) · [Discord bot](https://discord.gg/ecrRU4t7)
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 ![Node](https://img.shields.io/badge/node-20%2B-green)
