@@ -118,24 +118,22 @@ function Hero({ onTrigger }) {
           </div>
 
           <h1 style={{
-            margin: 0, textAlign: "center",
-            fontSize: "clamp(48px, 8vw, 96px)",
-            lineHeight: 0.98, letterSpacing: -0.04, fontWeight: 700
+            margin: "0 auto", textAlign: "center", maxWidth: 840,
+            fontSize: "clamp(48px, 8vw, 92px)",
+            lineHeight: 0.9, letterSpacing: -0.05, fontWeight: 800,
+            background: "linear-gradient(180deg, #fff 30%, rgba(255,255,255,0.6) 100%)",
+            WebkitBackgroundClip: "text", WebkitTextFillColor: "transparent"
           }}>
-            <div>Browse onchain.</div>
-            <div style={{
-              background: "linear-gradient(180deg,#5b9eff 0%,#2962ef 100%)",
-              WebkitBackgroundClip: "text", backgroundClip: "text", color: "transparent"
-            }}>Act autonomously.</div>
+            <div>Autonomous</div>
+            <div>Multi-Chain</div>
+            <div>Intelligence.</div>
           </h1>
 
           <p style={{
-            margin: "32px auto 0", maxWidth: 680, textAlign: "center",
-            fontSize: 18, lineHeight: 1.5, color: "var(--muted)", fontWeight: 400
+            margin: "32px auto 0", maxWidth: 640, textAlign: "center",
+            fontSize: "clamp(18px, 2vw, 22px)", lineHeight: 1.5, color: "var(--muted)", fontWeight: 450
           }}>
-            A three-agent autonomous DeFi pipeline. Observer reads your wallet, Task Manager
-            drafts intents, Auditor reviews policy. You sign off. Six stages, one wallet, zero
-            footguns.
+            OmnisysX is a production-grade DeFi agent orchestrating complex pipelines across EVM and Solana. Powered by Zerion and LI.FI.
           </p>
 
           <div style={{ display: "flex", gap: 12, justifyContent: "center", marginTop: 40, flexWrap: "wrap" }}>

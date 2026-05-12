@@ -3,11 +3,15 @@ function PortfolioDashboard(){
   const r = OBSERVER_REPORT;
   const totalChain = Object.values(r.portfolio.chainBreakdown).reduce((a,b)=>a+b,0);
   const chainEntries = Object.entries(r.portfolio.chainBreakdown).sort((a,b)=>b[1]-a[1]);
-  const chainColors = {Ethereum:"#627eea", Base:"#2962ef", Arbitrum:"#28a0f0", Optimism:"#ff5a5a", Polygon:"#8b5cf6"};
+  const chainColors = {Ethereum:"#627eea", Base:"#2962ef", Arbitrum:"#28a0f0", Optimism:"#ff5a5a", Polygon:"#8b5cf6", Solana:"#14f195"};
 
   const topPositions = r.positions.slice(0,5);
   const totalTop = topPositions.reduce((a,p)=>a+p.valueUsd,0);
   const [showAll, setShowAll] = useState(false);
+
+  // Multi-chain gas reserve logic
+  const ethGas = r.portfolio.ethBalanceNative;
+  const solGas = r.positions.find(p => p.symbol === "SOL")?.quantity || 0;
 
   return (
     <section id="dashboard" style={{padding:"40px 32px"}}>
@@ -38,7 +42,7 @@ function PortfolioDashboard(){
                     <span className="tnum">+{r.portfolio.change24hPercent.toFixed(2)}% · +{fmtUsd(r.portfolio.change24hUsd)}</span>
                     <span style={{color:"var(--muted)", fontWeight:400}}>24h</span>
                   </Pill>
-                  <Pill tone="neutral">Gas reserve · <span style={{color:"#34d399"}}>SAFE</span> · <span className="mono">{r.portfolio.ethBalanceNative} ETH</span></Pill>
+                  <Pill tone="neutral">Gas · <span style={{color:"#34d399"}}>SAFE</span> · <span className="mono">{ethGas} ETH / {solGas.toFixed(2)} SOL</span></Pill>
                   <Pill tone="muted"><span className="mono">{SHORT_WALLET}</span></Pill>
                 </div>
               </div>
@@ -215,7 +219,7 @@ function AllAssetsOverlay({ onClose }) {
   const r = OBSERVER_REPORT;
   const [tab, setTab] = useState("tokens");
   const [chainFilter, setChainFilter] = useState("All");
-  const chainColors = {Ethereum:"#627eea", Base:"#2962ef", Arbitrum:"#28a0f0", Optimism:"#ff5a5a", Polygon:"#8b5cf6"};
+  const chainColors = {Ethereum:"#627eea", Base:"#2962ef", Arbitrum:"#28a0f0", Optimism:"#ff5a5a", Polygon:"#8b5cf6", Solana:"#14f195"};
   const chains = ["All", ...Object.keys(r.portfolio.chainBreakdown)];
   const totalVal = r.positions.reduce((a,p)=>a+p.valueUsd,0);
 
