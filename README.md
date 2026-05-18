@@ -75,25 +75,25 @@ OmnisysX uses the Zerion ecosystem across three coordinated surfaces. Every valu
 ### 1. Intelligence (Zerion REST API)
 The Observer and Analyzer stages use the Zerion REST API for read-only data:
 
--Real-time, multi-chain portfolio snapshots in milliseconds
--Transaction history analysis to identify alpha and profit strategies
--Quote and route comparison across aggregators before any execution decision
+- Real-time, multi-chain portfolio snapshots in milliseconds
+- Transaction history analysis to identify alpha and profit strategies
+- Quote and route comparison across aggregators before any execution decision
 
 This is the "what does the wallet look like right now" layer. No keys touched.
 
 ### 2. Execution (Zerion CLI Agent Token)
 The Executor invokes the Zerion CLI for every signing and broadcast operation. The agent token created in step 3 carries the policy gates the LLM cannot bypass.
 
--Signing path: swaps, bridges, and sends are dispatched through zerionCli() in agent/agent.mjs, which spawns the Zerion CLI as a subprocess. Private keys stay inside the Zerion OWS keystore — they never leave local encrypted storage.
--Policy enforcement at execution time: the CLI itself rejects any action outside the agent token's allowed chains, contract allowlists, transfer/approval gates, and expiry window. Even if the LLM stack misbehaves, the CLI is the last line of defense.
--Route selection assist: LI.FI REST is consulted in parallel to identify the best bridge path; the chosen route is then handed to the CLI for execution.
+- Signing path: swaps, bridges, and sends are dispatched through zerionCli() in agent/agent.mjs, which spawns the Zerion CLI as a subprocess. Private keys stay inside the Zerion OWS keystore — they never leave local encrypted storage.
+- Policy enforcement at execution time: the CLI itself rejects any action outside the agent token's allowed chains, contract allowlists, transfer/approval gates, and expiry window. Even if the LLM stack misbehaves, the CLI is the last line of defense.
+- Route selection assist: LI.FI REST is consulted in parallel to identify the best bridge path; the chosen route is then handed to the CLI for execution.
 
 ### 3. Sovereignty (User-controlled Setup)
 The user retains ultimate control via manual CLI gestures, never delegated to the agent:
 
--Policy creation: zerion agent create-policy — defines the agent's boundaries (chains, tokens, expiries, transfer/approval gates)
--Agent token minting: zerion agent create-token --policy <id> — scopes credentials to that policy
--Manual override and verification: the CLI is always available for manual intervention, balance checks, and "reverse swaps" to verify wallet ownership during live demos
+- Policy creation: zerion agent create-policy — defines the agent's boundaries (chains, tokens, expiries, transfer/approval gates)
+- Agent token minting: zerion agent create-token --policy <id> — scopes credentials to that policy
+- Manual override and verification: the CLI is always available for manual intervention, balance checks, and "reverse swaps" to verify wallet ownership during live demos
 
 The agent operates only within the policy the user defined. To widen its powers, the user must mint a new token with a new policy — by hand, with the passphrase. No god-mode agents.
 
