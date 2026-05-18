@@ -57,7 +57,7 @@ This is the same pattern professional trading desks use: research, strategy, and
 
 - 🤖 **Multi-agent pipeline** with explicit security checkpoints
 - 🌐 **Zerion & LI.FI REST APIs + CLI** — high-performance, real-time swap and bridge execution
-- 🛡️ **Self-Custodial Execution — keys live in the encrypted Zerion CLI keystore (Open Wallet Standard); the Executor signs via the CLI's agent-token path so private keys never leave local storage
+- 🛡️ **Self-Custodial Execution** — keys live in the encrypted Zerion CLI keystore (Open Wallet Standard); the Executor signs via the CLI's agent-token path so private keys never leave local storage
 - 🛡️ **Policy-bounded execution** — integrated with Zerion CLI policies for manual safety checks
 - 🧠 **Orchestrator AI** — Web3 expert assistant via `/ask` or `@mention`, powered by OpenRouter
 - 🔒 **Security guardrails** — AI scope-locked to Web3 topics, never reveals keys or internal config
