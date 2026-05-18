@@ -8,7 +8,7 @@
 
 A production-grade autonomous agent that observes DeFi wallets, reasons about risk with LLM, and executes onchain transactions through Zerion — all with bounded, auditable powers.
 
-[Site-](https://omnisysx.xyz) · [Documentation](https://omnisysx.xyz/docs) · [Discord bot](https://discord.gg/ecrRU4t7)
+[Site](https://omnisysx.xyz) · [Documentation](https://omnisysx.xyz/docs) · [Discord bot](https://discord.gg/ecrRU4t7)
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg?style=for-the-badge)](LICENSE)
 ![Node](https://img.shields.io/badge/node-20%2B-green?style=for-the-badge&logo=node.js&logoColor=white)
@@ -57,7 +57,7 @@ This is the same pattern professional trading desks use: research, strategy, and
 
 - 🤖 **Multi-agent pipeline** with explicit security checkpoints
 - 🌐 **Zerion & LI.FI REST APIs + CLI** — high-performance, real-time swap and bridge execution
-- 🛡️ **Self-Custodial Execution** — transactions signed locally via `ethers.js`, keeping your keys secure
+- 🛡️ **Self-Custodial Execution — keys live in the encrypted Zerion CLI keystore (Open Wallet Standard); the Executor signs via the CLI's agent-token path so private keys never leave local storage
 - 🛡️ **Policy-bounded execution** — integrated with Zerion CLI policies for manual safety checks
 - 🧠 **Orchestrator AI** — Web3 expert assistant via `/ask` or `@mention`, powered by OpenRouter
 - 🔒 **Security guardrails** — AI scope-locked to Web3 topics, never reveals keys or internal config
@@ -87,8 +87,7 @@ For the user, the **Zerion CLI** remains the ultimate control layer:
 - **Policy Enforcement**: Users define the agent's boundaries (chains, tokens, expiries) via the CLI.
 - **Manual Override**: The WSL-based CLI allows for manual intervention and "reverse swaps" to verify wallet ownership during live demos.
 
-> **Judge's Note**: This hybrid approach leverages the **Zerion REST API** for speed/intelligence and the **Zerion CLI** for governance/security.
-
+> **Every value-moving onchain action — swap, bridge, send — flows through the Zerion CLI agent token. Zerion REST and LI.FI REST run alongside for read-side intelligence (portfolio analysis, route comparison) but never substitute the CLI for execution.
 ---
 
 ## Repository structure
