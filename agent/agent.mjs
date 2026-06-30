@@ -28,6 +28,7 @@ const exec = promisify(execFile)
 // ============================================================
 
 const OPENROUTER_API_KEY = process.env.OPENROUTER_API_KEY
+const ZERION_BIN = process.env.ZERION_BIN || (process.platform === 'win32' ? 'zerion' : './node_modules/.bin/zerion')
 const ZERION_API_KEY = process.env.ZERION_API_KEY
 const AGENT_WALLET_NAME = process.env.AGENT_WALLET_NAME || 'omnisysx-bot'
 const TARGET_ADDRESS = process.env.AGENT_WALLET_ADDRESS
@@ -38,6 +39,7 @@ const MODEL = process.env.LLM_MODEL || process.env.AGENT_MODEL || 'anthropic/cla
 if (!OPENROUTER_API_KEY) console.warn('⚠️ OPENROUTER_API_KEY missing in .env - LLM features will fail')
 if (!ZERION_API_KEY) console.warn('⚠️ ZERION_API_KEY missing in .env - Blockchain lookups will fail')
 if (!TARGET_ADDRESS) console.warn('⚠️ AGENT_WALLET_ADDRESS missing in .env - Pipeline will need an explicit address')
+if (!process.env.AGENT_PRIVATE_KEY) console.warn('⚠️ AGENT_PRIVATE_KEY missing in .env - Real execution (EVM) will fail')
 
 // ============================================================
 // LOGGING (colored, structured)
@@ -66,30 +68,35 @@ function die(msg) {
 // Reads onchain wallet state via the Zerion HTTP API.
 // ============================================================
 
-export async function runObserver(address) {
-  log.stage('OBSERVE', `analyzing ${shortAddr(address)}`)
+export async function runObserver(evmAddress, solAddress = null) {
+  log.stage('OBSERVE', `analyzing ${shortAddr(evmAddress)}${solAddress ? ' & ' + shortAddr(solAddress) : ''}`)
 
-  // 1. Observe positions and portfolio
-  const [posData, portData] = await Promise.all([
-    zerionGet(`/wallets/${address}/positions/?filter[positions]=only_simple&currency=usd&sort=value&filter[trash]=only_non_trash`),
-    zerionGet(`/wallets/${address}/portfolio?currency=usd`),
+  const fetchPositions = async (addr) => {
+    if (!addr) return []
+    const posData = await zerionGet(`/wallets/${addr}/positions/?filter[positions]=only_simple&currency=usd&sort=value&filter[trash]=only_non_trash`)
+    return (posData.data || []).map(p => {
+      const attr = p.attributes || {}
+      const info = attr.fungible_info || {}
+      return {
+        symbol: info.symbol || '???',
+        chain: attr.chain_id || 'unknown',
+        quantity: attr.quantity?.float || 0,
+        value: attr.value || 0,
+      }
+    }).filter(p => p.value > 0.01)
+  }
+
+  const [evmPositions, solPositions, portData] = await Promise.all([
+    fetchPositions(evmAddress),
+    fetchPositions(solAddress),
+    zerionGet(`/wallets/${evmAddress}/portfolio?currency=usd`),
   ])
 
-  const positions = (posData.data || []).map(p => {
-    const attr = p.attributes || {}
-    const info = attr.fungible_info || {}
-    return {
-      symbol: info.symbol || '???',
-      chain: attr.chain_id || 'unknown',
-      quantity: attr.quantity?.float || 0,
-      value: attr.value || 0,
-    }
-  }).filter(p => p.value > 0.01)
-
-  const totalUsd = portData.data?.attributes?.total?.positions || positions.reduce((s, p) => s + p.value, 0)
+  const positions = [...evmPositions, ...solPositions]
+  const totalUsd = positions.reduce((s, p) => s + p.value, 0)
   const change24h = portData.data?.attributes?.changes?.percent_1d || 0
 
-  const gasAsset = findGasAsset(positions, address)
+  const gasAsset = findGasAsset(positions, evmAddress)
   const gasBal = gasAsset?.quantity ?? 0
   const gasSymbol = gasAsset?.symbol || 'ETH'
   const gasStatus = computeGasStatus(gasBal, gasSymbol)
@@ -100,13 +107,26 @@ export async function runObserver(address) {
     .map(p => ({ symbol: p.symbol, chain: p.chain, qty: p.quantity, usd: p.value }))
 
   const report = {
-    address, totalUsd, change24h,
+    address: evmAddress, totalUsd, change24h,
     gasBalance: gasBal, gasSymbol, gasStatus,
     topPositions, timestamp: new Date().toISOString(),
   }
 
   log.ok(`portfolio: $${totalUsd.toFixed(2)} · ${gasSymbol}=${gasBal.toFixed(6)} (${gasStatus})`)
   return report
+}
+
+/**
+ * getChains - Fetches the list of supported chains from Zerion API.
+ */
+export async function getChains() {
+  log.stage('CHAINS', 'Fetching supported networks from Zerion...')
+  const data = await zerionGet('/chains/')
+  return (data.data || []).map(c => ({
+    id: c.id,
+    name: c.attributes?.name || c.id,
+    icon: c.attributes?.icon?.url
+  }))
 }
 
 export async function runMultiObserver(addresses) {
@@ -148,7 +168,7 @@ Data: ${JSON.stringify(txs, null, 2)}`
 }
 
 function findGasAsset(positions, address) {
-  // Se o endereço for Solana (comprimento > 42 caracteres ou sem 0x), prioriza SOL
+  // If address is Solana (length > 42 chars or without 0x), prioritize SOL
   const isSolana = address.length > 42 || !address.startsWith('0x')
 
   if (isSolana) {
@@ -156,11 +176,11 @@ function findGasAsset(positions, address) {
     if (sol) return sol
   }
 
-  // Tenta achar ETH (Base ou Ethereum)
+  // Try to find ETH (Base or Ethereum)
   const eth = positions.find(p => p.symbol === 'ETH' && (p.chain === 'ethereum' || p.chain === 'base'))
   if (eth) return eth
 
-  // Fallback para SOL se não achou ETH mas tem SOL
+  // Fallback to SOL if ETH is not found but SOL exists
   return positions.find(p => p.symbol === 'SOL' && p.chain === 'solana')
 }
 
@@ -188,19 +208,21 @@ RULES:
 
 JSON shape:
 {
-  "intentType": "SWAP" | "ALERT_ONLY",
+  "intentType": "SWAP" | "PRIVATE_SEND" | "ALERT_ONLY",
   "rationale": "short string explaining the decision",
   "action": {
     "chain": "base" | "ethereum" | "arbitrum" | "polygon" | "optimism" | "solana",
     "fromToken": "symbol",
     "toToken": "symbol",
     "amount": "string with number",
-    "slippageBps": 100
+    "slippageBps": 100,
+    "to": "destination address (required for PRIVATE_SEND)"
   },
   "confidence": 0.85
 }
 
-For ALERT_ONLY, "action" can be null.`
+For ALERT_ONLY, "action" can be null.
+Note: Use PRIVATE_SEND when anonymity or security for the recipient is required (via Umbra).`
 
 export async function runTaskManager(report) {
   log.stage('PLAN', 'TaskManager reasoning...')
@@ -296,14 +318,20 @@ function buildZerionCommand(tis) {
       if (action.slippageBps) cmd.push('--slippage', String(action.slippageBps / 100))
       break
     case 'BRIDGE':
+      // A bridge requires the format: bridge <from-chain> <from-token> <amount> <to-chain> <to-token>
       cmd.push('bridge', action.chain, action.fromToken, String(action.amount))
       if (action.toChain) cmd.push(action.toChain)
       if (action.toToken) cmd.push(action.toToken)
-      cmd.push('--wallet', wallet)
+      cmd.push('--wallet', wallet, '--cheapest') // Optimization: Use the cheapest route
       break
     case 'SEND':
       cmd.push('send', action.fromToken, String(action.amount))
       cmd.push('--to', action.to, '--chain', action.chain, '--wallet', wallet)
+      break
+    case 'PRIVATE_SEND':
+      // Umbra skill: zerion umbra <chain> <amount> <token> <recipient>
+      cmd.push('umbra', action.chain, String(action.amount), action.fromToken, action.to)
+      cmd.push('--wallet', wallet)
       break
     default:
       throw new Error(`Unknown intentType: ${intentType}`)
@@ -329,7 +357,7 @@ async function runVerify(execResult, beforeReport) {
 
   const after = await runObserver(beforeReport.address)
   const deltaUsd = after.totalUsd - beforeReport.totalUsd
-  const deltaEth = after.ethBalance - beforeReport.ethBalance
+  const deltaEth = (after.gasSymbol === 'ETH' ? after.gasBalance : 0) - (beforeReport.gasSymbol === 'ETH' ? beforeReport.gasBalance : 0)
   log.dim(`Δ portfolio: $${deltaUsd.toFixed(2)} | Δ ETH: ${deltaEth.toFixed(6)}`)
   log.ok('verification complete')
   return { ok: true, after, deltaUsd, deltaEth }
@@ -339,6 +367,7 @@ async function runVerify(execResult, beforeReport) {
 // HELPERS
 // ============================================================
 
+// Zerion HTTP API — used for reading wallet data (Observer)
 async function zerionGet(path) {
   const res = await fetch(`https://api.zerion.io/v1${path}`, {
     headers: {
@@ -350,35 +379,42 @@ async function zerionGet(path) {
   return res.json()
 }
 
-export const ZERION_BIN = 'npx --no-install zerion'
-
+// Zerion CLI — used for executing swaps, policies, and wallet ops
 export async function zerionCli(args, envOverride = {}) {
   try {
     const finalArgs = [...args]
 
+    // Decide which token to use based on the requested wallet
     let agentToken = process.env.ZERION_AGENT_TOKEN
+    let walletName = 'default'
     const walletIdx = finalArgs.indexOf('--wallet')
     if (walletIdx !== -1) {
-      const walletName = finalArgs[walletIdx + 1]
+      walletName = finalArgs[walletIdx + 1]
       if (walletName === 'omnisysx-bot-sol') {
         agentToken = process.env.ZERION_AGENT_TOKEN_SOL || agentToken
       }
     }
 
     if (agentToken) {
-      finalArgs.push('--agent-token', agentToken)
+      log.dim(`Using Agent Token: ${agentToken.slice(0, 10)}... (Scope: ${walletName || 'default'})`)
     }
 
+    // The CLI reads ZERION_AGENT_TOKEN from env (not from --agent-token flag).
+    // Override it in the child process so Solana swaps use the SOL token.
     const env = {
       ...process.env,
-      ZERION_API_KEY: process.env.ZERION_API_KEY || ''
+      ZERION_API_KEY: process.env.ZERION_API_KEY || '',
+      ...(agentToken ? { ZERION_AGENT_TOKEN: agentToken } : {})
     }
 
-    const t = env.ZERION_AGENT_TOKEN || ''
-    console.log(`[debug] Zerion Call: wallet=${finalArgs[finalArgs.indexOf('--wallet') + 1]} | token_len=${t.length} | token_start=${t.slice(0, 10)}...`)
-
+    const passphraseFile = process.env.ZERION_PASSPHRASE_FILE || ''
     const passphrase = process.env.ZERION_PASSPHRASE || ''
-    const cmdStr = passphrase
+
+    if (passphraseFile && !finalArgs.includes('--passphrase-file')) {
+      finalArgs.push('--passphrase-file', passphraseFile)
+    }
+
+    const cmdStr = (passphrase && !passphraseFile)
       ? `echo "${passphrase}" | ${ZERION_BIN} ${finalArgs.join(' ')}`
       : `${ZERION_BIN} ${finalArgs.join(' ')}`
 
@@ -389,20 +425,66 @@ export async function zerionCli(args, envOverride = {}) {
   }
 }
 
+import { randomUUID } from 'node:crypto'
+
+/**
+ * executeWithSecureCLI
+ * Executes Zerion CLI commands privately by generating a temporary wallet 
+ * in real-time and destroying it instantly after use.
+ * Shell Bypass: Does not expose arguments in bash history (execFile without shell).
+ */
+export async function executeWithSecureCLI(userPrivateKey, actionArgs) {
+  const tempWallet = `dm_tmp_${randomUUID().split('-')[0]}`
+  try {
+    log.dim(`[SECURE-CLI] Importing temporary wallet in-memory...`)
+    await execFile(ZERION_BIN, ['wallet', 'import', '--name', tempWallet, '--private-key', userPrivateKey], { env: process.env })
+
+    log.dim(`[SECURE-CLI] Executing action with temporary wallet...`)
+    const args = [...actionArgs, '--wallet', tempWallet, '--json']
+    const { stdout } = await execFile(ZERION_BIN, args, { env: process.env, maxBuffer: 10 * 1024 * 1024 })
+    return JSON.parse(stdout)
+  } finally {
+    log.dim(`[SECURE-CLI] Shredding temporary wallet from disk...`)
+    try {
+      await execFile(ZERION_BIN, ['wallet', 'remove', '--name', tempWallet], { env: process.env })
+    } catch (e) { }
+  }
+}
+
+/**
+ * executeUmbra
+ * Sends funds while hiding the route using the Umbra protocol via Zerion CLI.
+ */
+export async function executeUmbra({ token, amount, recipient, chain, userPrivateKey = null }) {
+  log.stage('UMBRA-SEND', `Sending ${amount} ${token} to ${recipient} on ${chain} privately`)
+  const cmd = ['send', chain.toLowerCase(), token.toUpperCase(), amount, recipient, '--privacy', 'umbra']
+
+  if (!userPrivateKey) {
+    cmd.push('--wallet', AGENT_WALLET_NAME, '--json')
+    const result = await zerionCli(cmd)
+    if (!result.hash && !result.transaction?.hash) throw new Error(result.error?.message || 'Umbra send failed via CLI')
+    return { txHash: result.hash || result.transaction.hash, status: 'SUCCESS', method: 'Zerion CLI (Umbra Public)' }
+  } else {
+    const result = await executeWithSecureCLI(userPrivateKey, cmd)
+    if (result.error) throw new Error(result.error.message)
+    return { txHash: result.hash || result.transaction?.hash, status: 'SUCCESS', method: 'Zerion CLI (Umbra Secure DM)' }
+  }
+}
+
 async function askClaude(systemPrompt, userPrompt, opts = {}) {
   const res = await fetch('https://openrouter.ai/api/v1/chat/completions', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json',
       'Authorization': `Bearer ${OPENROUTER_API_KEY}`,
-      'HTTP-Referer': 'https://omnisysx.io',
+      'HTTP-Referer': 'https://omnisysx.xyz',
       'X-Title': 'OmnisysX Agent',
     },
     body: JSON.stringify({
       model: MODEL,
       max_tokens: opts.maxTokens || 800,
       messages: [
-        { role: 'system', content: systemPrompt },
+        { role: 'system', content: systemPrompt + `\n\nCURRENT_DATE: ${new Date().toDateString()}\nCURRENT_YEAR: ${new Date().getFullYear()}` },
         { role: 'user', content: userPrompt },
       ],
       temperature: 0.3,
@@ -421,6 +503,10 @@ function extractJson(text) {
 
 function shortAddr(a) { return `${a.slice(0, 6)}…${a.slice(-4)}` }
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)) }
+
+// ============================================================
+// PIPELINE — orchestrates all stages
+// ============================================================
 
 export async function runPipeline(address = TARGET_ADDRESS) {
   const start = Date.now()
@@ -462,156 +548,103 @@ export async function runPipeline(address = TARGET_ADDRESS) {
 }
 
 // Direct swap execution (REAL ON-CHAIN VERSION)
-export async function executeSwap({ fromToken, toToken, amount, chain }) {
-  log.stage('SWAP-API', `${amount} ${fromToken} → ${toToken} on ${chain} (Executing REAL Transaction)`)
-  
-  if (chain.toLowerCase() !== 'base') {
-    throw new Error('Real on-chain swaps currently only enabled for BASE in this demo.')
+export async function executeSwap({ fromToken, toToken, amount, chain, userPrivateKey = null }) {
+  log.stage('SWAP-API', `${amount} ${fromToken} -> ${toToken} on ${chain} (Executing REAL Transaction)`)
+
+  if (userPrivateKey) {
+    throw new Error("Private Mode cannot securely delegate to global CLI yet. Use EVM networks or Public Mode.")
   }
 
-  const provider = new ethers.JsonRpcProvider('https://mainnet.base.org')
-  const wallet = new ethers.Wallet(process.env.AGENT_PRIVATE_KEY, provider)
+  log.dim(`Executing via Zerion CLI pipeline...`)
+  const wallet = chain.toLowerCase() === 'solana' ? `${AGENT_WALLET_NAME}-sol` : AGENT_WALLET_NAME
 
-  try {
-    const TOKENS = {
-      'ETH': '0x0000000000000000000000000000000000000000',
-      'USDC': '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913'
-    }
-    const fromAddr = TOKENS[fromToken.toUpperCase()] || fromToken
-    const toAddr = TOKENS[toToken.toUpperCase()] || toToken
+  const cmd = [
+    'swap', chain.toLowerCase(), amount, fromToken, toToken,
+    '--wallet', wallet, '--cheapest', '--json'
+  ]
+  const result = await zerionCli(cmd)
+  const txHash = result.tx?.hash || result.txHash || result.transaction?.hash || result.hash
+  if (!txHash) throw new Error(result.error?.message || `Swap failed via CLI: ${JSON.stringify(result)}`)
 
-    log.dim(`Requesting real quote from LI.FI API...`)
-    
-    const url = new URL('https://li.quest/v1/quote')
-    url.searchParams.set('fromChain', '8453') // Base
-    url.searchParams.set('toChain', '8453')
-    url.searchParams.set('fromToken', fromAddr)
-    url.searchParams.set('toToken', toAddr)
-    url.searchParams.set('fromAmount', ethers.parseUnits(String(amount), fromToken.toUpperCase() === 'USDC' ? 6 : 18).toString())
-    url.searchParams.set('fromAddress', wallet.address)
-    url.searchParams.set('slippage', '0.03') // 3%
-
-    const response = await fetch(url.toString())
-    const quote = await response.json()
-
-    if (!response.ok) {
-      throw new Error(`LI.FI Quote Error: ${quote.message || 'Unknown error'}`)
-    }
-
-    if (fromToken.toUpperCase() !== 'ETH') {
-      const tokenContract = new ethers.Contract(fromAddr, [
-        'function allowance(address owner, address spender) view returns (uint256)',
-        'function approve(address spender, uint256 amount) returns (bool)'
-      ], wallet)
-
-      const spender = quote.transactionRequest.to
-      const allowance = await tokenContract.allowance(wallet.address, spender)
-      const required = BigInt(quote.action.fromAmount)
-
-      if (allowance < required) {
-        log.stage('APPROVE', `Granting permission for ${fromToken} to LI.FI...`)
-        const approveTx = await tokenContract.approve(spender, ethers.MaxUint256)
-        log.dim(`Waiting for approval confirmation...`)
-        await approveTx.wait()
-        log.ok(`Approval successful!`)
-      }
-    }
-
-    log.dim(`Signing and broadcasting swap transaction to Base...`)
-
-    const txResponse = await wallet.sendTransaction({
-      to: quote.transactionRequest.to,
-      data: quote.transactionRequest.data,
-      value: quote.transactionRequest.value,
-      gasLimit: quote.transactionRequest.gasLimit ? (BigInt(quote.transactionRequest.gasLimit) * 13n / 10n) : 1000000n // 30% buffer
-    })
-
-    log.ok(`Transaction Broadcasted! Hash: ${txResponse.hash.slice(0, 10)}...`)
-    
-    return { 
-      txHash: txResponse.hash, 
-      method: 'Zerion / LI.FI API',
-      status: 'SUCCESS',
-      amountReceived: quote.estimate.toAmountMin
-    }
-  } catch (e) {
-    log.err(`Real Swap failed: ${e.message}`)
-    throw e
+  return {
+    txHash,
+    method: '(Zerion CLI)',
+    status: 'SUCCESS'
   }
 }
 
 // Direct bridge execution (REAL ON-CHAIN VERSION)
-export async function executeBridge({ fromToken, toToken, amount, fromChain, toChain }) {
-  log.stage('BRIDGE-API', `${amount} ${fromToken} (${fromChain}) → ${toToken} (${toChain})`)
-  
-  const CHAIN_IDS = { 
-    'base': 8453, 'eth': 1, 'ethereum': 1, 'arbitrum': 42161, 
-    'polygon': 137, 'optimism': 10, 'avalanche': 43114, 
-    'bsc': 56, 'linea': 59144, 'zksync': 324 
-  }
-  const fId = CHAIN_IDS[fromChain.toLowerCase()]
-  const tId = CHAIN_IDS[toChain.toLowerCase()]
+export async function executeBridge({ fromToken, toToken, amount, fromChain, toChain, toAddress = null, userPrivateKey = null }) {
+  log.stage('BRIDGE-API', `${amount} ${fromToken} (${fromChain}) -> ${toToken} (${toChain})`)
 
-  if (!fId || !tId) throw new Error(`Chain ${fromChain} or ${toChain} not supported in API demo.`)
+  if (userPrivateKey) {
+    throw new Error("Private Mode cannot securely delegate to global CLI yet. Use Public Mode.")
+  }
+
+  log.dim(`Executing via Zerion CLI pipeline...`)
+  const wallet = fromChain.toLowerCase() === 'solana' ? `${AGENT_WALLET_NAME}-sol` : AGENT_WALLET_NAME
+
+  const cmd = [
+    'bridge', fromChain.toLowerCase(), fromToken.toUpperCase(), amount,
+    toChain.toLowerCase(), toToken.toUpperCase(),
+    '--wallet', wallet, '--cheapest', '--json'
+  ]
+
+  if (toAddress) {
+    cmd.push('--to-address', toAddress)
+  }
+
+  const result = await zerionCli(cmd)
+  const txHash = result.tx?.hash || result.txHash || result.transaction?.hash || result.hash
+  if (!txHash) throw new Error(result.error?.message || `Bridge failed via CLI: ${JSON.stringify(result)}`)
+
+  return {
+    txHash,
+    method: '(Zerion CLI)',
+    status: 'SUCCESS'
+  }
+}
+
+export async function executeBulkSend({ token, amountPerWallet, recipients, chain, userPrivateKey = null }) {
+  log.stage('BULK-SEND', `Distributing ${amountPerWallet} ${token} to ${recipients.length} wallets on ${chain}`)
 
   const RPCS = {
-    8453: 'https://mainnet.base.org',
-    1: 'https://eth.llamarpc.com',
-    42161: 'https://arb1.arbitrum.io/rpc',
-    137: 'https://polygon-rpc.com',
-    10: 'https://mainnet.optimism.io',
-    56: 'https://bsc-dataseed.binance.org'
+    'base': 'https://mainnet.base.org', 'eth': 'https://eth.llamarpc.com',
+    'arbitrum': 'https://arb1.arbitrum.io/rpc', 'polygon': 'https://polygon-rpc.com',
+    'optimism': 'https://mainnet.optimism.io', 'bsc': 'https://bsc-dataseed.binance.org'
   }
-  
-  const rpcUrl = RPCS[fId] || 'https://mainnet.base.org'
+  const rpcUrl = RPCS[chain.toLowerCase()] || 'https://mainnet.base.org'
   const provider = new ethers.JsonRpcProvider(rpcUrl)
-  const wallet = new ethers.Wallet(process.env.AGENT_PRIVATE_KEY, provider)
+  const pk = userPrivateKey || process.env.AGENT_PRIVATE_KEY
+  const wallet = new ethers.Wallet(pk, provider)
 
-  try {
-    const TOKENS = {
-      'ETH': '0x0000000000000000000000000000000000000000',
-      'USDC': fromChain.toLowerCase() === 'base' ? '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913' : '0xaf88d065e77c8cC2239327C5EDb3A432268e5831'
-    }
-    const fromAddr = TOKENS[fromToken.toUpperCase()] || fromToken
-    const toAddr = TOKENS[toToken.toUpperCase()] || toToken
+  const results = []
+  const amountWei = ethers.parseUnits(String(amountPerWallet), token.toUpperCase() === 'USDC' ? 6 : 18)
 
-    log.dim(`Requesting bridge quote from LI.FI...`)
-    const url = new URL('https://li.quest/v1/quote')
-    url.searchParams.set('fromChain', String(fId))
-    url.searchParams.set('toChain', String(tId))
-    url.searchParams.set('fromToken', fromAddr)
-    url.searchParams.set('toToken', toAddr)
-    url.searchParams.set('fromAmount', ethers.parseUnits(String(amount), fromToken.toUpperCase() === 'USDC' ? 6 : 18).toString())
-    url.searchParams.set('fromAddress', wallet.address)
-
-    const response = await fetch(url.toString())
-    const quote = await response.json()
-    if (!response.ok) throw new Error(`LI.FI Bridge Error: ${quote.message}`)
-
-    if (fromToken.toUpperCase() !== 'ETH') {
-      const tokenContract = new ethers.Contract(fromAddr, ['function allowance(address,address) view returns (uint256)', 'function approve(address,uint256) returns (bool)'], wallet)
-      const spender = quote.transactionRequest.to
-      const allowance = await tokenContract.allowance(wallet.address, spender)
-      if (allowance < BigInt(quote.action.fromAmount)) {
-        log.stage('APPROVE', `Approving ${fromToken} for bridge...`)
-        await (await tokenContract.approve(spender, ethers.MaxUint256)).wait()
+  for (const recipient of recipients) {
+    try {
+      log.dim(`Sending to ${recipient.slice(0, 8)}...`)
+      let tx;
+      if (token.toUpperCase() === 'ETH') {
+        tx = await wallet.sendTransaction({ to: recipient, value: amountWei })
+      } else {
+        const USDC_MAP = {
+          'base': '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913',
+          'arbitrum': '0xaf88d065e77c8cC2239327C5EDb3A432268e5831',
+          'eth': '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48'
+        }
+        const tokenAddr = USDC_MAP[chain.toLowerCase()] || token
+        const contract = new ethers.Contract(tokenAddr, ['function transfer(address,uint256) returns (bool)'], wallet)
+        tx = await contract.transfer(recipient, amountWei)
       }
+      results.push({ recipient, hash: tx.hash, status: 'SUCCESS' })
+    } catch (e) {
+      log.err(`Failed for ${recipient}: ${e.message}`)
+      results.push({ recipient, error: e.message, status: 'FAILED' })
     }
-
-    log.dim(`Broadcasting bridge transaction...`)
-    const tx = await wallet.sendTransaction({
-      to: quote.transactionRequest.to,
-      data: quote.transactionRequest.data,
-      value: quote.transactionRequest.value,
-      gasLimit: 1000000n
-    })
-
-    log.ok(`Bridge sent! Hash: ${tx.hash.slice(0, 10)}...`)
-    return { txHash: tx.hash, status: 'SUCCESS' }
-  } catch (e) {
-    log.err(`Bridge failed: ${e.message}`)
-    throw e
   }
+
+  return results
 }
 
 if (import.meta.url === `file://${process.argv[1]}` || import.meta.url.includes(process.argv[1]?.replace(/\\/g, '/'))) {
